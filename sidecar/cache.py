@@ -141,7 +141,10 @@ class MediaCache:
                 end = start + duration
                 while position < end:
                     part = min(self.settings.chunk_minutes * 60, end - position)
-                    target = rendered / f"{output_index:03d} - {self._safe_name(title) or 'Chapter'}.mp3"
+                    # Keep the cache layout deliberately simple and stable.
+                    # Chapter titles remain available from ABS metadata; Garmin
+                    # only needs the chunk order and manifest duration here.
+                    target = rendered / f"{output_index:04d}.mp3"
                     self._run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{position:.3f}", "-i", str(source), "-t", f"{part:.3f}", "-vn", "-map_metadata", "-1", "-map_chapters", "-1", "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", self.settings.bitrate, str(target)], stage)
                     output_index, position = output_index + 1, position + part
         if output_index == 1:

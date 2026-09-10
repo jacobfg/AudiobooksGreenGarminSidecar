@@ -33,8 +33,8 @@ def settings(tmp_path: Path) -> Settings:
 def write_manifest(root: Path, item_id: str) -> None:
     book = root / item_id
     book.mkdir()
-    (book / "001.mp3").write_bytes(b"mp3")
-    (book / "manifest.json").write_text(json.dumps({"files": [{"id": "chunk-001", "path": "001.mp3", "filename": "001 - Chapter.mp3", "duration": 12.5}]}))
+    (book / "0001.mp3").write_bytes(b"mp3")
+    (book / "manifest.json").write_text(json.dumps({"files": [{"id": "chunk-001", "path": "0001.mp3", "filename": "0001.mp3", "duration": 12.5}]}))
 
 
 def test_virtual_playlist_merges_source_playlists_and_serves_manifest(tmp_path):
@@ -49,6 +49,7 @@ def test_virtual_playlist_merges_source_playlists_and_serves_manifest(tmp_path):
         manifest = client.get("/audiobookshelf/book", params={"book_id": "book-a", "limit": 30}, headers=headers).json()
         assert manifest["total"] == 1
         assert manifest["files"][0]["id"] == "chunk-001"
+        assert manifest["files"][0]["filename"] == "0001.mp3"
         response = client.get("/api/items/book-a/file/chunk-001/download", headers=headers)
         assert response.status_code == 200
         assert response.content == b"mp3"
