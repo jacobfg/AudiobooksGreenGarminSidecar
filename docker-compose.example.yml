@@ -1,0 +1,17 @@
+services:
+  garmin-media-sidecar:
+    build: .
+    restart: unless-stopped
+    environment:
+      ABS_URL: http://audiobookshelf:80
+      # A dedicated token for the same ABS account used by the watch.
+      ABS_TOKEN: change-me
+      SIDECAR_CONFIG: /app/config.yaml
+      CACHE_DIR: /app/cache
+      POLL_INTERVAL_SECONDS: "300"
+      AUTH_CACHE_SECONDS: "300"
+      CACHE_CHUNK_MINUTES: "30"
+      CACHE_BITRATE: 96k
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./media-cache:/app/cache

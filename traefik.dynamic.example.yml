@@ -1,0 +1,36 @@
+http:
+  routers:
+    garmin-sidecar-playlists:
+      rule: "Host(`abs.example.net`) && (Path(`/audiobookshelf/playlists`) || Path(`/audiobookshelf/playlist`) || Path(`/audiobookshelf/book`))"
+      priority: 200
+      service: garmin-sidecar
+      entryPoints: [websecure]
+      tls: {}
+    garmin-sidecar-media:
+      rule: "Host(`abs.example.net`) && PathRegexp(`^/api/items/[^/]+/file/[^/]+/download$`)"
+      priority: 200
+      service: garmin-sidecar
+      entryPoints: [websecure]
+      tls: {}
+    audiobooks-green-proxy:
+      rule: "Host(`abs.example.net`) && PathPrefix(`/audiobookshelf/`)"
+      priority: 100
+      service: audiobooks-green-proxy
+      entryPoints: [websecure]
+      tls: {}
+    audiobookshelf:
+      rule: "Host(`abs.example.net`) && PathPrefix(`/api/`)"
+      priority: 100
+      service: audiobookshelf
+      entryPoints: [websecure]
+      tls: {}
+  services:
+    garmin-sidecar:
+      loadBalancer:
+        servers: [{url: "http://garmin-media-sidecar:8082"}]
+    audiobooks-green-proxy:
+      loadBalancer:
+        servers: [{url: "http://audiobooks-green-proxy:8081"}]
+    audiobookshelf:
+      loadBalancer:
+        servers: [{url: "http://audiobookshelf:80"}]
