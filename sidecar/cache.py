@@ -24,6 +24,8 @@ class MediaCache:
         (self.root / ".staging").mkdir(exist_ok=True)
         self.queue = None
         self.pending: set[str] = set()
+        self.running: set[str] = set()
+        self.errors: dict[str, str] = {}
 
     def start(self) -> None:
         """Bind the queue to the ASGI application's running event loop."""
@@ -84,15 +86,41 @@ class MediaCache:
             raise RuntimeError("media cache worker has not been started")
         while True:
             item_id = await self.queue.get()
+            self.running.add(item_id)
             try:
                 await self.build(item_id)
-            except Exception:
+                self.errors.pop(item_id, None)
+            except Exception as error:
+                self.errors[item_id] = str(error)
                 # Retain staging output for diagnosis; a later poll retries it.
                 import logging
                 logging.getLogger(__name__).exception("Garmin conversion failed for %s", item_id)
             finally:
+                self.running.discard(item_id)
                 self.pending.discard(item_id)
                 self.queue.task_done()
+
+    def status(self, item_id: str) -> dict:
+        """Describe cache availability and the current background job state."""
+        manifest = self.manifest(item_id)
+        if manifest is not None:
+            files = manifest["files"]
+            return {
+                "state": "ready",
+                "exists": True,
+                "file_count": len(files),
+                "duration_seconds": sum(entry["duration"] for entry in files),
+            }
+        if item_id in self.running:
+            state = "generating"
+        elif item_id in self.pending:
+            state = "queued"
+        elif item_id in self.errors:
+            state = "failed"
+        else:
+            state = "missing"
+        return {"state": state, "exists": False, "file_count": 0, "duration_seconds": 0.0,
+                "last_error": self.errors.get(item_id)}
 
     async def build(self, item_id: str) -> None:
         directory = self._directory(item_id)

@@ -24,3 +24,15 @@ Set the watch **Server** and **Proxy** fields to the same public HTTPS hostname 
 The sidecar shows only virtual playlists. It verifies the watch's Bearer token with ABS before returning virtual data or audio. Progress and covers continue to use ABS through the normal `/api/*` route.
 
 Cached item directories are global (`<cache>/<ABS item ID>`), not playlist-specific. On each fully successful playlist poll, the sidecar deletes cache entries not referenced by any configured source playlist.
+
+## Trigger and inspect a playlist
+
+An authenticated request to the status endpoint immediately refreshes the named
+virtual playlist and queues every missing rendition. It reports the ABS source
+files and duration, the configured ABS user's playback position, and cache
+state (`ready`, `queued`, `generating`, `failed`, or `missing`):
+
+```sh
+curl --fail-with-body --silent "https://garmin-abs.example.net/garmin/playlist-status/Adventure" \
+  --header "Authorization: Bearer $ABS_TOKEN" | jq
+```

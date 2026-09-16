@@ -14,6 +14,17 @@ from .cache import MediaCache
 from .config import Settings, load_settings
 
 
+def format_hms(seconds: object) -> str:
+    """Format ABS's floating-point seconds as a human-readable clock value."""
+    try:
+        whole_seconds = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        whole_seconds = 0
+    hours, remainder = divmod(whole_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
 def create_app(settings: Optional[Settings] = None, abs_client: Optional[AbsClient] = None) -> FastAPI:
     settings = settings or load_settings()
     abs_client = abs_client or AbsClient(settings.abs_url, settings.abs_token)
@@ -107,6 +118,53 @@ def create_app(settings: Optional[Settings] = None, abs_client: Optional[AbsClie
         if limit > 0:
             selected = selected[:limit]
         return {"files": [{"id": item["id"], "filename": item["filename"], "duration": item["duration"]} for item in selected], "skip": skip, "limit": limit, "total": len(files)}
+
+    @app.get("/garmin/playlist-status/{playlist_name}", dependencies=[Depends(require_abs_token)])
+    async def playlist_status(playlist_name: str):
+        """Refresh, queue, and report a virtual playlist's ABS/cache state."""
+        group = next((entry for entry in settings.playlists if entry.name.casefold() == playlist_name.casefold()), None)
+        if group is None:
+            raise HTTPException(status_code=404, detail="Unknown virtual playlist name")
+
+        await reconcile()
+        books = virtual_books.get(group.id, [])
+
+        async def describe(book: dict) -> dict:
+            item_id = book["id"]
+            item, progress = await asyncio.gather(abs_client.item(item_id), abs_client.progress(item_id))
+            media = item.get("media") if isinstance(item, dict) else {}
+            audio_files = media.get("audioFiles") if isinstance(media, dict) else []
+            audio_files = audio_files if isinstance(audio_files, list) else []
+            source_files = []
+            for source in audio_files:
+                metadata = source.get("metadata") if isinstance(source, dict) else {}
+                duration = source.get("duration", 0) if isinstance(source, dict) else 0
+                source_files.append({
+                    "id": str(source.get("ino", "")) if isinstance(source, dict) else "",
+                    "filename": metadata.get("filename", "") if isinstance(metadata, dict) else "",
+                    "duration_seconds": float(duration or 0),
+                    "duration": format_hms(duration),
+                })
+            duration = sum(file["duration_seconds"] for file in source_files)
+            current_time = progress.get("currentTime", 0) if progress else 0
+            cache_state = cache.status(item_id)
+            cache_state["duration"] = format_hms(cache_state["duration_seconds"])
+            return {
+                **book_summary(item),
+                "duration_seconds": duration,
+                "duration": format_hms(duration),
+                "position_seconds": float(current_time or 0),
+                "position": format_hms(current_time),
+                "progress": progress.get("progress", 0) if progress else 0,
+                "source_files": source_files,
+                "cache": cache_state,
+            }
+
+        return {
+            "playlist": {"id": group.id, "name": group.name, "source_playlist_ids": group.source_playlist_ids},
+            "book_count": len(books),
+            "books": await asyncio.gather(*(describe(book) for book in books)),
+        }
 
     @app.get("/api/items/{book_id}/file/{file_id}/download", dependencies=[Depends(require_abs_token)])
     async def download(book_id: str, file_id: str):

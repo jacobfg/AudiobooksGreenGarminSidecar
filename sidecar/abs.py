@@ -39,6 +39,18 @@ class AbsClient:
             raise RuntimeError(f"ABS item {item_id} did not return an object")
         return payload
 
+    async def progress(self, item_id: str) -> Optional[dict]:
+        """Return the configured ABS user's progress, if the book has any."""
+        path = f"/api/me/progress/{item_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.base_url + path, headers=self.headers(self.service_token)) as response:
+                if response.status == 404:
+                    return None
+                if not response.ok:
+                    raise RuntimeError(f"ABS GET {path} failed ({response.status}): {await response.text()}")
+                payload = await response.json()
+        return payload if isinstance(payload, dict) else None
+
     async def download(self, item_id: str, file_id: str, target) -> None:
         path = f"/api/items/{item_id}/file/{file_id}/download"
         async with aiohttp.ClientSession() as session:

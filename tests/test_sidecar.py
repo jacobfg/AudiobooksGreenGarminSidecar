@@ -23,6 +23,19 @@ class FakeAbs:
         }
         return books[playlist_id]
 
+    async def item(self, item_id):
+        return {
+            "id": item_id,
+            "media": {
+                "metadata": {"title": item_id.upper(), "authors": [{"name": "Test Author"}]},
+                "audioFiles": [{"ino": f"file-{item_id}", "duration": 3661.8,
+                                "metadata": {"filename": f"{item_id}.m4b"}}],
+            },
+        }
+
+    async def progress(self, item_id):
+        return {"currentTime": 65.9, "progress": 0.018} if item_id == "book-a" else None
+
 
 def settings(tmp_path: Path) -> Settings:
     return Settings("http://abs", "service-token", tmp_path, 3600, 60, 30, "96k", (
@@ -60,6 +73,23 @@ def test_invalid_bearer_token_is_rejected(tmp_path):
     with TestClient(app) as client:
         assert client.get("/audiobookshelf/playlists").status_code == 401
         assert client.get("/audiobookshelf/playlists", headers={"Authorization": "Bearer no"}).status_code == 401
+
+
+def test_playlist_status_refreshes_and_reports_source_progress_and_cache(tmp_path):
+    write_manifest(tmp_path, "book-a")
+    write_manifest(tmp_path, "book-b")
+    app = create_app(settings(tmp_path), FakeAbs())
+    with TestClient(app) as client:
+        response = client.get("/garmin/playlist-status/adventure", headers={"Authorization": "Bearer valid"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["playlist"]["id"] == "garmin-adventure"
+    assert payload["book_count"] == 2
+    first = payload["books"][0]
+    assert first["duration"] == "1:01:01"
+    assert first["position"] == "0:01:05"
+    assert first["cache"]["state"] == "ready"
+    assert first["source_files"][0]["filename"] == "book-a.m4b"
 
 
 def test_prune_removes_only_unmanaged_book_caches(tmp_path):
