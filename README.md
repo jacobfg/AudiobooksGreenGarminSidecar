@@ -30,7 +30,9 @@ Cached item directories are global (`<cache>/<ABS item ID>`), not playlist-speci
 An authenticated request to the status endpoint immediately refreshes the named
 virtual playlist and queues every missing rendition. It reports the ABS source
 files and duration, the configured ABS user's playback position, and cache
-state (`ready`, `queued`, `generating`, `failed`, or `missing`):
+state (`ready`, `queued`, `generating`, `failed`, or `missing`). While a book
+is converting, `cache.generation.files` reports exact source/output file
+progress such as `3/12` rather than an estimated percentage:
 
 ```sh
 curl --fail-with-body --silent "https://garmin-abs.example.net/garmin/playlist-status/Adventure" \

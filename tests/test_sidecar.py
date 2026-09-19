@@ -99,3 +99,14 @@ def test_prune_removes_only_unmanaged_book_caches(tmp_path):
     cache.prune({"keep"})
     assert (tmp_path / "keep").is_dir()
     assert not (tmp_path / "remove").exists()
+
+
+def test_cache_status_reports_exact_generation_file_progress(tmp_path):
+    cache = MediaCache(settings(tmp_path), FakeAbs())
+    cache.running.add("book-building")
+    cache.generation["book-building"] = {
+        "phase": "rendering", "current": 3, "total": 12, "files": "3/12",
+    }
+    status = cache.status("book-building")
+    assert status["state"] == "generating"
+    assert status["generation"]["files"] == "3/12"
