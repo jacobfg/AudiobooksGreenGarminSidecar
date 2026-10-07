@@ -186,6 +186,7 @@ class MediaCache:
                 while position < end:
                     part = min(self.settings.chunk_minutes * 60, end - position)
                     plans.append((source, position, part, title))
+                    position += part
 
         rendered.mkdir()
         if not plans:

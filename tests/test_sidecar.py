@@ -1,6 +1,8 @@
 import json
+import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sidecar.app import create_app
@@ -110,3 +112,45 @@ def test_cache_status_reports_exact_generation_file_progress(tmp_path):
     status = cache.status("book-building")
     assert status["state"] == "generating"
     assert status["generation"]["files"] == "3/12"
+
+
+@pytest.mark.parametrize("multiple_sources", [False, True])
+def test_render_advances_chunks_and_finishes(tmp_path, monkeypatch, multiple_sources):
+    cache = MediaCache(settings(tmp_path), FakeAbs())
+    sources = [tmp_path / "first.m4b"]
+    if multiple_sources:
+        sources.append(tmp_path / "second.mp3")
+    audio_files = [{"metadata": {"filename": source.name}} for source in sources]
+    monkeypatch.setattr(cache, "_chapters", lambda _: [(10.0, 3605.5, "Chapter")])
+    monkeypatch.setattr(cache, "_duration", lambda _: 3605.5)
+    commands = []
+    monkeypatch.setattr(cache, "_run", lambda command, cwd: commands.append(command))
+
+    # Bound execution so a regressed infinite planner fails before consuming RAM.
+    line_count = 0
+
+    def guard(frame, event, arg):
+        nonlocal line_count
+        if frame.f_code is MediaCache._render.__code__ and event == "line":
+            line_count += 1
+            if line_count > 1000:
+                raise AssertionError("chunk planning did not finish")
+        return guard
+
+    previous_trace = sys.gettrace()
+    try:
+        sys.settrace(guard)
+        cache._render("book-a", tmp_path, tmp_path / "rendered", sources, audio_files)
+    finally:
+        sys.settrace(previous_trace)
+
+    start = 0.0 if multiple_sources else 10.0
+    expected = [(str(source), f"{start + offset:.3f}", duration)
+                for source in sources
+                for offset, duration in [(0, "1800.000"), (1800, "1800.000"), (3600, "5.500")]]
+    assert [(command[command.index("-i") + 1], command[command.index("-ss") + 1],
+             command[command.index("-t") + 1]) for command in commands] == expected
+    assert [Path(command[-1]).name for command in commands] == [
+        f"{index:04d}.mp3" for index in range(1, len(expected) + 1)
+    ]
+    assert cache.generation["book-a"]["files"] == f"{len(expected)}/{len(expected)}"
