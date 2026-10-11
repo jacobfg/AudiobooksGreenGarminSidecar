@@ -58,10 +58,11 @@ def load_settings(path: Optional[str] = None) -> Settings:
             raise ValueError("virtual playlist IDs must be unique letters, digits, _ or -")
         if not isinstance(name, str) or not name.strip() or not isinstance(source_ids, list) or not source_ids:
             raise ValueError(f"virtual playlist {playlist_id} requires name and source_playlist_ids")
-        if any(not isinstance(source_id, str) or not source_id for source_id in source_ids):
-            raise ValueError(f"virtual playlist {playlist_id} has an invalid source playlist ID")
+        if any(not isinstance(source_id, str) or not source_id.strip()
+               or any(not part.strip() for part in source_id.split("/", 1)) for source_id in source_ids):
+            raise ValueError(f"virtual playlist {playlist_id} has an invalid source playlist ID or library/playlist name")
         seen.add(playlist_id)
-        playlists.append(VirtualPlaylist(playlist_id, name.strip(), tuple(source_ids)))
+        playlists.append(VirtualPlaylist(playlist_id, name.strip(), tuple(source.strip() for source in source_ids)))
 
     abs_url, abs_token = os.getenv("ABS_URL", "").rstrip("/"), os.getenv("ABS_TOKEN", "")
     if not abs_url or not abs_token:

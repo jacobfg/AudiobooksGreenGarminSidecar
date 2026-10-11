@@ -1,17 +1,32 @@
 # AudiobooksGreen Garmin Sidecar
 
-Personal sidecar for [AudiobooksGreen](https://github.com/fabrikant/AudiobooksGreen). It presents virtual watch playlists that merge exact ABS playlist IDs across libraries, pre-renders Garmin-compatible MP3 media, and serves the generated chunks.
+Personal sidecar for [AudiobooksGreen](https://github.com/fabrikant/AudiobooksGreen). It presents virtual watch playlists that merge ABS playlists across libraries, pre-renders Garmin-compatible MP3 media, and serves the generated chunks.
 
 It intentionally does **not** modify the generic AudiobooksGreen proxy or the watch app.
 
 ## Configure
 
-Copy `config.example.yaml` to `config.yaml`, replace playlist IDs, and set these environment variables:
+Copy `config.example.yaml` to `config.yaml`, set your playlist sources, and set these environment variables:
 
 - `ABS_URL`: private ABS base URL reachable from the sidecar.
 - `ABS_TOKEN`: API token for the ABS account whose playlists are configured.
 - `CACHE_DIR` (default `/app/cache`), `POLL_INTERVAL_SECONDS` (default `300`), `AUTH_CACHE_SECONDS` (default `300`).
 - `CACHE_CHUNK_MINUTES` (default `30`) and `CACHE_BITRATE` (default `96k`).
+
+`source_playlist_ids` accepts `library name/playlist name` entries and existing ABS playlist IDs, including a mix of both:
+
+```yaml
+virtual_playlists:
+  - id: garmin-adventure
+    name: Adventure
+    source_playlist_ids:
+      - "Library A/Adventure Books"
+      - "Library B/Adventure Books"
+```
+
+Library and playlist names are matched without regard to case. Leading/trailing whitespace is ignored and repeated whitespace is treated as a single space. Use literal names, including spaces, without URL encoding. The first `/` separates the library from the playlist; library names containing `/` require a playlist ID instead. If names are ambiguous after normalization, use an ID to select the intended playlist.
+
+Names are resolved again on every poll and status refresh. Missing libraries or playlists are silently treated as empty sources, including playlists deleted when their last book is removed. A recreated playlist with the same name is picked up on the next refresh without changing the config or restarting. Missing playlist IDs are also skipped, but cannot follow a recreated playlist's new ID. Authentication, network, and other server errors still fail the refresh and preserve existing playlist/cache data.
 
 `docker compose -f docker-compose.example.yml up -d --build` starts the service.
 
@@ -23,7 +38,7 @@ Set the watch **Server** and **Proxy** fields to the same public HTTPS hostname 
 
 The sidecar shows only virtual playlists. It verifies the watch's Bearer token with ABS before returning virtual data or audio. Progress and covers continue to use ABS through the normal `/api/*` route.
 
-Cached item directories are global (`<cache>/<ABS item ID>`), not playlist-specific. On each fully successful playlist poll, the sidecar deletes cache entries not referenced by any configured source playlist.
+Cached item directories are global (`<cache>/<ABS item ID>`), not playlist-specific. On each fully successful playlist poll, the sidecar deletes cache entries not referenced by any configured source playlist. Missing sources count as empty for this cleanup.
 
 ## Trigger and inspect a playlist
 

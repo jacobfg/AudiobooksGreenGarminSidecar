@@ -1,8 +1,8 @@
-# IDs are ABS playlist IDs, not names. This makes same-named playlists in
-# different libraries unambiguous.
+# Sources accept library name/playlist name or an existing ABS playlist ID.
+# Names ignore case and extra whitespace; missing sources are skipped.
 virtual_playlists:
   - id: garmin-adventure
     name: Adventure
     source_playlist_ids:
-      - adventure-playlist-in-library-a
-      - adventure-playlist-in-library-b
+      - "Library A/Adventure"
+      - "Library B/Adventure"

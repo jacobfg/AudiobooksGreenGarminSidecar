@@ -37,14 +37,19 @@ def create_app(settings: Optional[Settings] = None, abs_client: Optional[AbsClie
         nonlocal virtual_books
         refreshed: dict[str, list[dict]] = {}
         all_ids: set[str] = set()
+        named_sources = {source for group in settings.playlists for source in group.source_playlist_ids if "/" in source}
+        resolved = await abs_client.resolve_playlist_names(named_sources) if named_sources else {}
         for group in settings.playlists:
             merged: dict[str, dict] = {}
-            for source_id in group.source_playlist_ids:
+            for source in group.source_playlist_ids:
+                source_id = resolved[source] if "/" in source else source
+                if source_id is None:
+                    continue
                 for book in await abs_client.playlist_items(source_id):
                     merged.setdefault(book["id"], book)
             refreshed[group.id] = list(merged.values())
             all_ids.update(merged)
-        # Only update/prune after every configured source has succeeded.
+        # Only update/prune after every source has succeeded or is confirmed missing.
         virtual_books = refreshed
         for item_id in all_ids:
             cache.queue_item(item_id)

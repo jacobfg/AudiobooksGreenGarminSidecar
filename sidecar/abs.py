@@ -13,9 +13,11 @@ class AbsClient:
     def headers(token: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {token.removeprefix('Bearer ').strip()}"}
 
-    async def _json(self, path: str, token: Optional[str] = None):
+    async def _json(self, path: str, token: Optional[str] = None, *, missing_ok: bool = False):
         async with aiohttp.ClientSession() as session:
             async with session.get(self.base_url + path, headers=self.headers(token or self.service_token)) as response:
+                if missing_ok and response.status == 404:
+                    return None
                 if not response.ok:
                     raise RuntimeError(f"ABS GET {path} failed ({response.status}): {await response.text()}")
                 return await response.json()
@@ -23,8 +25,39 @@ class AbsClient:
     async def validate_token(self, token: str) -> None:
         await self._json("/api/me", token)
 
+    async def resolve_playlist_names(self, sources: set[str]) -> dict[str, Optional[str]]:
+        """Resolve library/playlist names using a fresh snapshot on each refresh."""
+        def normalized(name: str) -> str:
+            return " ".join(name.split()).casefold()
+
+        libraries_payload = await self._json("/api/libraries")
+        playlists_payload = await self._json("/api/playlists")
+        libraries = libraries_payload.get("libraries") if isinstance(libraries_payload, dict) else None
+        playlists = playlists_payload.get("playlists") if isinstance(playlists_payload, dict) else None
+        # A malformed response must not be mistaken for an empty source and prune media.
+        for entries, fields in ((libraries, ("id", "name")), (playlists, ("id", "name", "libraryId"))):
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, dict) or any(not isinstance(entry.get(field), str) for field in fields)
+                for entry in entries
+            ):
+                raise RuntimeError("ABS returned an invalid library or playlist listing")
+
+        resolved = {}
+        for source in sources:
+            library_name, playlist_name = map(normalized, source.split("/", 1))
+            matches = [library for library in libraries if normalized(library["name"]) == library_name]
+            if len(matches) > 1:
+                raise RuntimeError(f"Ambiguous ABS library name in {source!r}; use a playlist ID")
+            playlist_matches = [playlist for playlist in playlists if matches
+                                and playlist["libraryId"] == matches[0]["id"]
+                                and normalized(playlist["name"]) == playlist_name]
+            if len(playlist_matches) > 1:
+                raise RuntimeError(f"Ambiguous ABS playlist name in {source!r}; use a playlist ID")
+            resolved[source] = playlist_matches[0]["id"] if playlist_matches else None
+        return resolved
+
     async def playlist_items(self, playlist_id: str) -> list[dict]:
-        payload = await self._json(f"/api/playlists/{playlist_id}")
+        payload = await self._json(f"/api/playlists/{playlist_id}", missing_ok=True)
         items = payload.get("items", []) if isinstance(payload, dict) else []
         result = []
         for item in items:
