@@ -26,6 +26,7 @@ class MediaCache:
         self.pending: set[str] = set()
         self.running: set[str] = set()
         self.errors: dict[str, str] = {}
+        self.generation: dict[str, dict] = {}
 
     def start(self) -> None:
         """Bind the queue to the ASGI application's running event loop."""
@@ -79,6 +80,7 @@ class MediaCache:
         self.pending.add(item_id)
         if self.queue is None:
             raise RuntimeError("media cache worker has not been started")
+        self._set_generation(item_id, "queued", 0, 0)
         self.queue.put_nowait(item_id)
 
     async def worker(self) -> None:
@@ -105,12 +107,15 @@ class MediaCache:
         manifest = self.manifest(item_id)
         if manifest is not None:
             files = manifest["files"]
-            return {
+            result = {
                 "state": "ready",
                 "exists": True,
                 "file_count": len(files),
                 "duration_seconds": sum(entry["duration"] for entry in files),
             }
+            if item_id in self.generation:
+                result["generation"] = self.generation[item_id]
+            return result
         if item_id in self.running:
             state = "generating"
         elif item_id in self.pending:
@@ -120,7 +125,7 @@ class MediaCache:
         else:
             state = "missing"
         return {"state": state, "exists": False, "file_count": 0, "duration_seconds": 0.0,
-                "last_error": self.errors.get(item_id)}
+                "generation": self.generation.get(item_id), "last_error": self.errors.get(item_id)}
 
     async def build(self, item_id: str) -> None:
         directory = self._directory(item_id)
@@ -133,16 +138,26 @@ class MediaCache:
         audio_files = self._audio_files(item)
         downloaded = []
         for index, info in enumerate(audio_files, 1):
+            self._set_generation(item_id, "downloading", index - 1, len(audio_files))
             filename = info["metadata"]["filename"]
             target = sources / f"source-{index:04d}{Path(filename).suffix.lower()}"
             await self.abs.download(item_id, str(info["ino"]), target)
             downloaded.append(target)
-        await asyncio.to_thread(self._render, stage, rendered, downloaded, audio_files)
+            self._set_generation(item_id, "downloading", index, len(audio_files))
+        await asyncio.to_thread(self._render, item_id, stage, rendered, downloaded, audio_files)
         manifest = await asyncio.to_thread(self._manifest, rendered)
         (rendered / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         if self.manifest_from(rendered) is None:
             raise RuntimeError("generated media manifest is invalid")
         await asyncio.to_thread(self._publish, directory, rendered, stage)
+
+    def _set_generation(self, item_id: str, phase: str, current: int, total: int) -> None:
+        self.generation[item_id] = {
+            "phase": phase,
+            "current": current,
+            "total": total,
+            "files": f"{current}/{total}",
+        }
 
     @staticmethod
     def _audio_files(item: dict) -> list[dict]:
@@ -157,9 +172,10 @@ class MediaCache:
                 raise RuntimeError("only M4B and MP3 source media are supported")
         return files
 
-    def _render(self, stage: Path, rendered: Path, sources: list[Path], audio_files: list[dict]) -> None:
-        rendered.mkdir()
-        output_index = 1
+    def _render(self, item_id: str, stage: Path, rendered: Path, sources: list[Path], audio_files: list[dict]) -> None:
+        # Probe every source first so output progress is an exact chunk count,
+        # rather than an estimate based on bytes or elapsed encoding time.
+        plans = []
         for source, source_info in zip(sources, audio_files):
             units = self._chapters(source)
             if len(sources) > 1:
@@ -169,14 +185,18 @@ class MediaCache:
                 end = start + duration
                 while position < end:
                     part = min(self.settings.chunk_minutes * 60, end - position)
-                    # Keep the cache layout deliberately simple and stable.
-                    # Chapter titles remain available from ABS metadata; Garmin
-                    # only needs the chunk order and manifest duration here.
-                    target = rendered / f"{output_index:04d}.mp3"
-                    self._run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{position:.3f}", "-i", str(source), "-t", f"{part:.3f}", "-vn", "-map_metadata", "-1", "-map_chapters", "-1", "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", self.settings.bitrate, str(target)], stage)
-                    output_index, position = output_index + 1, position + part
-        if output_index == 1:
+                    plans.append((source, position, part, title))
+                    position += part
+
+        rendered.mkdir()
+        if not plans:
             raise RuntimeError("conversion produced no files")
+        for output_index, (source, position, part, _title) in enumerate(plans, 1):
+            self._set_generation(item_id, "rendering", output_index - 1, len(plans))
+            # Keep the cache layout deliberately simple and stable.
+            target = rendered / f"{output_index:04d}.mp3"
+            self._run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{position:.3f}", "-i", str(source), "-t", f"{part:.3f}", "-vn", "-map_metadata", "-1", "-map_chapters", "-1", "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", self.settings.bitrate, str(target)], stage)
+            self._set_generation(item_id, "rendering", output_index, len(plans))
 
     @staticmethod
     def _safe_name(value: str) -> str:
