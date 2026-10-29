@@ -34,6 +34,12 @@ To use a Docker Compose secret, save the token in `abs_token.txt`, remove `ABS_T
 
 The worker runs one conversion at a time. A cache entry is published only after all chunks and its manifest are complete. Failed jobs remain under `.staging` for diagnosis and are retried by the next poll.
 
+## Tests and container releases
+
+GitHub Actions runs the Python tests on pushes and pull requests, builds Linux AMD64 and ARM64 images, and smoke-tests startup with both token sources, the health endpoint, authentication enforcement, and the bundled FFmpeg tools. Run the Python tests locally with `python -m pip install -r requirements-dev.txt` followed by `python -m pytest -q`.
+
+To publish a release, tag a commit on `main` with a stable version such as `0.1.0` (no `v` prefix) and push the tag. The publish workflow checks the tag and its ancestry, runs the tests, and pushes both architectures to `ghcr.io/jacobfg/audiobooksgreengarminsidecar` with the version and `latest` tags, using the repository's `GITHUB_TOKEN`. To use a published image, replace `build: .` in Compose with `image: ghcr.io/jacobfg/audiobooksgreengarminsidecar:0.1.0`, substituting your published version.
+
 ## Watch and Traefik
 
 Set the watch **Server** and **Proxy** fields to the same public HTTPS hostname and enable **prefer proxy requests**. Adapt `traefik.dynamic.example.yml` to that hostname and network. Its specific sidecar routers must have higher priority than the broad proxy/API routers.

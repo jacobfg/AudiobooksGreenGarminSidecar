@@ -1,0 +1,9 @@
+.git
+.github
+.pytest_cache
+.venv
+**/__pycache__
+tests
+media-cache
+config.yaml
+abs_token.txt
