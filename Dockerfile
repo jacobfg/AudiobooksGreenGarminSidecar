@@ -1,4 +1,4 @@
-FROM mwader/static-ffmpeg:6.0-1 AS ffmpeg
+FROM mwader/static-ffmpeg:7.0-1 AS ffmpeg
 
 FROM python:3.12-slim
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
