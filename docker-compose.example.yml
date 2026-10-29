@@ -6,6 +6,8 @@ services:
       ABS_URL: http://audiobookshelf:80
       # A dedicated token for the same ABS account used by the watch.
       ABS_TOKEN: change-me
+      # To use a Compose secret instead, remove ABS_TOKEN and uncomment:
+      # ABS_TOKEN_FILE: /run/secrets/abs_token
       SIDECAR_CONFIG: /app/config.yaml
       CACHE_DIR: /app/cache
       POLL_INTERVAL_SECONDS: "300"
@@ -15,3 +17,9 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./media-cache:/app/cache
+    # secrets:
+    #   - abs_token
+
+# secrets:
+#   abs_token:
+#     file: ./abs_token.txt
