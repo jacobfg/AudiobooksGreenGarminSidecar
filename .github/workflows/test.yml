@@ -57,9 +57,20 @@ jobs:
               --mount type=bind,src=/tmp/sidecar-config/config.yaml,dst=/app/config.yaml,readonly \
               --mount type=bind,src=/tmp/sidecar-config/abs_token,dst=/run/secrets/abs_token,readonly \
               -e ABS_URL=http://127.0.0.1:9 "${token_args[@]}" sidecar-smoke:local
-            curl --fail --silent --show-error --retry 30 --retry-connrefused \
-              --retry-delay 1 --max-time 5 http://127.0.0.1:8082/healthz \
-              | python -c 'import json, sys; assert json.load(sys.stdin) == {"status": "ok"}'
+            ready=false
+            for attempt in {1..30}; do
+              if curl --fail --silent --show-error --max-time 2 \
+                --output /tmp/sidecar-health.json http://127.0.0.1:8082/healthz; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            if [[ "$ready" != true ]]; then
+              echo '::error::Container did not become healthy within 30 attempts.'
+              exit 1
+            fi
+            python -c 'import json; assert json.load(open("/tmp/sidecar-health.json")) == {"status": "ok"}'
             test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
               http://127.0.0.1:8082/audiobookshelf/playlists)" = 401
             docker exec sidecar-smoke ffmpeg -version
