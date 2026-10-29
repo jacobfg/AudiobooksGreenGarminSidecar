@@ -1,6 +1,6 @@
 FROM mwader/static-ffmpeg:6.0-1 AS ffmpeg
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 WORKDIR /app
