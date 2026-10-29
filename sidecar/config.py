@@ -65,8 +65,16 @@ def load_settings(path: Optional[str] = None) -> Settings:
         playlists.append(VirtualPlaylist(playlist_id, name.strip(), tuple(source.strip() for source in source_ids)))
 
     abs_url, abs_token = os.getenv("ABS_URL", "").rstrip("/"), os.getenv("ABS_TOKEN", "")
+    abs_token_file = os.getenv("ABS_TOKEN_FILE", "")
+    if abs_token and abs_token_file:
+        raise ValueError("Set only one of ABS_TOKEN or ABS_TOKEN_FILE")
+    if abs_token_file:
+        try:
+            abs_token = Path(abs_token_file).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("ABS_TOKEN_FILE must point to a readable UTF-8 token file") from exc
     if not abs_url or not abs_token:
-        raise ValueError("ABS_URL and ABS_TOKEN are required")
+        raise ValueError("ABS_URL and either ABS_TOKEN or a non-empty ABS_TOKEN_FILE are required")
     return Settings(abs_url, abs_token, Path(os.getenv("CACHE_DIR", "/app/cache")),
                     _positive_int("POLL_INTERVAL_SECONDS", 300), _positive_int("AUTH_CACHE_SECONDS", 300),
                     _positive_int("CACHE_CHUNK_MINUTES", 30), os.getenv("CACHE_BITRATE", "96k"), tuple(playlists))

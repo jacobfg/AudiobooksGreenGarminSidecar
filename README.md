@@ -9,7 +9,7 @@ It intentionally does **not** modify the generic AudiobooksGreen proxy or the wa
 Copy `config.example.yaml` to `config.yaml`, set your playlist sources, and set these environment variables:
 
 - `ABS_URL`: private ABS base URL reachable from the sidecar.
-- `ABS_TOKEN`: API token for the ABS account whose playlists are configured.
+- `ABS_TOKEN` or `ABS_TOKEN_FILE`: API token for the ABS account whose playlists are configured, or the path to a UTF-8 file containing it. Set only one. Surrounding whitespace is stripped from file contents; empty or unreadable files fail startup.
 - `CACHE_DIR` (default `/app/cache`), `POLL_INTERVAL_SECONDS` (default `300`), `AUTH_CACHE_SECONDS` (default `300`).
 - `CACHE_CHUNK_MINUTES` (default `30`) and `CACHE_BITRATE` (default `96k`).
 
@@ -29,6 +29,8 @@ Library and playlist names are matched without regard to case. Leading/trailing 
 Names are resolved again on every poll and status refresh. Missing libraries or playlists are silently treated as empty sources, including playlists deleted when their last book is removed. A recreated playlist with the same name is picked up on the next refresh without changing the config or restarting. Missing playlist IDs are also skipped, but cannot follow a recreated playlist's new ID. Authentication, network, and other server errors still fail the refresh and preserve existing playlist/cache data.
 
 `docker compose -f docker-compose.example.yml up -d --build` starts the service.
+
+To use a Docker Compose secret, save the token in `abs_token.txt`, remove `ABS_TOKEN` from the Compose environment, and uncomment `ABS_TOKEN_FILE` and both `secrets` sections in `docker-compose.example.yml`. Compose mounts the file at `/run/secrets/abs_token`. Keep the token file out of version control. The token is read at startup; recreate the container after changing it.
 
 The worker runs one conversion at a time. A cache entry is published only after all chunks and its manifest are complete. Failed jobs remain under `.staging` for diagnosis and are retried by the next poll.
 
