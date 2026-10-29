@@ -42,9 +42,9 @@ To publish a release, tag a commit on `main` with a stable version such as `0.1.
 
 ## Scheduled dependency updates
 
-The Renovate Bot workflow runs daily at 06:04 UTC and supports manual runs with optional debug logging, following the [container-scheduler setup](https://github.com/jacobfg/container-scheduler/blob/main/.github/workflows/renovatebot.yml). It groups stable minor and patch updates to the Python and FFmpeg Docker images, the CI Python version, and packages in `requirements.txt` and `requirements-dev.txt` into one maintenance PR. Direct Python dependencies are pinned so Renovate can propose version changes; transitive dependencies are still resolved by pip. Existing PRs are refreshed; no updates means no new PR. Major upgrades and merging remain manual. GitHub Actions and the pinned Renovate action/engine versions are maintained manually.
+The Renovate Bot workflow runs daily at 06:04 UTC and supports manual runs with optional debug logging, following the [container-scheduler setup](https://github.com/jacobfg/container-scheduler/blob/main/.github/workflows/renovatebot.yml). It groups stable minor and patch updates to the Python and FFmpeg Docker images, the CI Python version, and packages in `requirements.txt` and `requirements-dev.txt` into one maintenance PR. Direct Python dependencies are pinned so Renovate can propose version changes; transitive dependencies are still resolved by pip. Existing PRs are refreshed; no updates means no new PR. Major upgrades appear in the Dependency Dashboard issue and require checkbox approval before Renovate creates a PR. Merging remains manual. GitHub Actions and the pinned Renovate action/engine versions are maintained manually.
 
-Before running it, add an Actions secret named `RENOVATE_TOKEN` containing a dedicated GitHub PAT authorized for `jacobfg/AudiobooksGreenGarminSidecar`, with contents and pull-request write access, permission to update workflow files (for the CI Python version), and the read permissions required by [Renovate](https://docs.renovatebot.com/modules/platform/github/). A fine-grained token must explicitly include this repository. The dedicated token allows Renovate PRs to trigger CI; do not substitute `GITHUB_TOKEN`. The workflow checks repository access before starting. Scheduled runs begin after merge to `main`.
+Before running it, add an Actions secret named `RENOVATE_TOKEN` containing a dedicated GitHub PAT authorized for `jacobfg/AudiobooksGreenGarminSidecar`, with contents, pull-request, and Issues write access, permission to update workflow files (for the CI Python version), and the read permissions required by [Renovate](https://docs.renovatebot.com/modules/platform/github/). A fine-grained token must explicitly include this repository. The dedicated token allows Renovate PRs to trigger CI; do not substitute `GITHUB_TOKEN`. The workflow checks repository access before starting. Scheduled runs begin after merge to `main`.
 
 ## Watch and Traefik
 
@@ -67,3 +67,15 @@ progress such as `3/12` rather than an estimated percentage:
 curl --fail-with-body --silent "https://garmin-abs.example.net/garmin/playlist-status/Adventure" \
   --header "Authorization: Bearer $ABS_TOKEN" | jq
 ```
+
+Renovate automatically discovers `.github/renovate.json5` on the default branch.
+The workflow does not also load it as global configuration, avoiding duplicate
+custom managers. The workflow and shared update policy are identical across fittools,
+container-scheduler, and AudiobooksGreenGarminSidecar: daily at 06:04 UTC, manual debug
+runs, one grouped minor/patch PR, a Dependency Dashboard with approval required
+for major upgrades, and no automerge. Language-specific dependency managers stay
+local to each repository. Branch-update failures are promoted to errors so a
+rejected push fails the Action. The access preflight only checks visibility;
+it does not prove the token can push. A push rejected with HTTP 403 requires
+checking the token's repository selection, write permissions, and repository
+rules. Issues write access is required for the dashboard.

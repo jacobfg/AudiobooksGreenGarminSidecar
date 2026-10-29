@@ -5,7 +5,7 @@
     "dockerfile",
     "custom.regex"
   ],
-  "dependencyDashboard": false,
+  "dependencyDashboard": true,
   "automerge": false,
   "prConcurrentLimit": 1,
   "prHourlyLimit": 1,
@@ -21,9 +21,8 @@
       "groupSlug": "application-dependencies"
     },
     {
-      "description": "Leave major upgrades and other update types for manual maintenance",
+      "description": "Leave pins, digests, replacements, and rollbacks for manual maintenance",
       "matchUpdateTypes": [
-        "major",
         "pin",
         "digest",
         "pinDigest",
@@ -32,6 +31,13 @@
         "bump"
       ],
       "enabled": false
+    },
+    {
+      "description": "Show major upgrades in the dashboard and wait for approval",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
     }
   ],
   "customManagers": [
@@ -56,5 +62,11 @@
     "main"
   ],
   "groupSingleUpdates": true,
-  "ignoreUnstable": true
+  "ignoreUnstable": true,
+  "logLevelRemap": [
+    {
+      "matchMessage": "/^Error updating branch$/",
+      "newLogLevel": "error"
+    }
+  ]
 }
