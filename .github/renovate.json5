@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": [
+    "pip_requirements",
+    "dockerfile",
+    "custom.regex"
+  ],
+  "dependencyDashboard": false,
+  "automerge": false,
+  "prConcurrentLimit": 1,
+  "prHourlyLimit": 1,
+  "separateMinorPatch": false,
+  "packageRules": [
+    {
+      "description": "One application maintenance PR for minor and patch releases",
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "application dependencies",
+      "groupSlug": "application-dependencies"
+    },
+    {
+      "description": "Leave major upgrades and other update types for manual maintenance",
+      "matchUpdateTypes": [
+        "major",
+        "pin",
+        "digest",
+        "pinDigest",
+        "replacement",
+        "rollback",
+        "bump"
+      ],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/(test|publish)\\.yml$/"
+      ],
+      "matchStrings": [
+        "python-version: '(?<currentValue>\\d+\\.\\d+)'"
+      ],
+      "depNameTemplate": "python",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
+  "labels": [
+    "dependencies",
+    "bot"
+  ],
+  "baseBranchPatterns": [
+    "main"
+  ],
+  "groupSingleUpdates": true,
+  "ignoreUnstable": true
+}
