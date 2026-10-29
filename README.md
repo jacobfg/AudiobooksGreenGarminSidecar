@@ -40,6 +40,12 @@ GitHub Actions runs the Python tests on pushes and pull requests, builds Linux A
 
 To publish a release, tag a commit on `main` with a stable version such as `0.1.0` (no `v` prefix) and push the tag. The publish workflow checks the tag and its ancestry, runs the tests, and pushes both architectures to `ghcr.io/jacobfg/audiobooksgreengarminsidecar` with the version and `latest` tags, using the repository's `GITHUB_TOKEN`. To use a published image, replace `build: .` in Compose with `image: ghcr.io/jacobfg/audiobooksgreengarminsidecar:0.1.0`, substituting your published version.
 
+## Scheduled dependency updates
+
+The Renovate Bot workflow runs daily at 06:04 UTC and supports manual runs with optional debug logging, following the [container-scheduler setup](https://github.com/jacobfg/container-scheduler/blob/main/.github/workflows/renovatebot.yml). It groups stable minor and patch updates to the Python and FFmpeg Docker images, the CI Python version, and packages in `requirements.txt` and `requirements-dev.txt` into one maintenance PR. Direct Python dependencies are pinned so Renovate can propose version changes; transitive dependencies are still resolved by pip. Existing PRs are refreshed; no updates means no new PR. Major upgrades and merging remain manual. GitHub Actions and the pinned Renovate action/engine versions are maintained manually.
+
+Before running it, add an Actions secret named `RENOVATE_TOKEN` containing a dedicated GitHub PAT authorized for `jacobfg/AudiobooksGreenGarminSidecar`, with contents and pull-request write access, permission to update workflow files (for the CI Python version), and the read permissions required by [Renovate](https://docs.renovatebot.com/modules/platform/github/). A fine-grained token must explicitly include this repository. The dedicated token allows Renovate PRs to trigger CI; do not substitute `GITHUB_TOKEN`. The workflow checks repository access before starting. Scheduled runs begin after merge to `main`.
+
 ## Watch and Traefik
 
 Set the watch **Server** and **Proxy** fields to the same public HTTPS hostname and enable **prefer proxy requests**. Adapt `traefik.dynamic.example.yml` to that hostname and network. Its specific sidecar routers must have higher priority than the broad proxy/API routers.
