@@ -12,6 +12,12 @@
   "separateMinorPatch": false,
   "packageRules": [
     {
+      "description": "Treat FFmpeg image suffixes as build revisions, not compatibility variants",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["mwader/static-ffmpeg"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)(?:\\.(?<patch>\\d+))?(?:-(?<build>\\d+))?$"
+    },
+    {
       "description": "One application maintenance PR for minor and patch releases",
       "matchUpdateTypes": [
         "minor",
