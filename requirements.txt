@@ -1,4 +1,4 @@
-aiohttp[speedups]==3.13.5
-fastapi[standard]==0.128.8
+aiohttp[speedups]==3.14.5
+fastapi[standard]==0.162.0
 PyYAML==6.0.3
-uvicorn==0.39.0
+uvicorn==0.54.0
