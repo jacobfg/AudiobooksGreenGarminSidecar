@@ -543,16 +543,18 @@ func TestPlaylistLookupByNameOrID(t *testing.T) {
 				}
 				s.Settings.Playlists = groups
 				f.playlists = []Object{{"id": "first", "libraryId": "a", "name": name}}
+				key := "playlist_name"
 				selector := name
 				if lookup == "normalized-name" {
 					selector = "  " + strings.ToUpper(strings.ReplaceAll(name, " ", "   ")) + "  "
 				}
 				if lookup == "id" {
+					key = "playlist_id"
 					selector = groups[0].ID
 				}
 				// Exercise both the initial reconciliation and an existing cached snapshot.
 				for i := 0; i < 2; i++ {
-					w := request(s, "/audiobookshelf/playlist?playlist_id="+url.QueryEscape(selector), "Bearer valid")
+					w := request(s, "/audiobookshelf/playlist?"+key+"="+url.QueryEscape(selector), "Bearer valid")
 					var books []Object
 					if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &books) != nil || len(books) != 1 || books[0]["id"] != "book-a" {
 						t.Fatalf("lookup failed: %d %s", w.Code, w.Body.String())
@@ -568,7 +570,7 @@ func TestPlaylistLookupByNameOrID(t *testing.T) {
 	}
 }
 
-func TestPlaylistExactIDTakesPrecedenceOverName(t *testing.T) {
+func TestPlaylistIDAndNameSelectIndependently(t *testing.T) {
 	s, _ := setup(t)
 	groups, err := ParsePlaylists("garmin-adventure,Adventure")
 	if err != nil {
@@ -579,9 +581,29 @@ func TestPlaylistExactIDTakesPrecedenceOverName(t *testing.T) {
 		"garmin-garmin-adventure": {{"id": "name-match"}},
 		"garmin-adventure":        {{"id": "id-match"}},
 	}
-	w := request(s, "/audiobookshelf/playlist?playlist_id=garmin-adventure", "Bearer valid")
-	var books []Object
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &books) != nil || len(books) != 1 || books[0]["id"] != "id-match" {
-		t.Fatalf("saved watch ID resolved to the wrong playlist: %d %s", w.Code, w.Body.String())
+	for key, want := range map[string]string{"playlist_id": "id-match", "playlist_name": "name-match"} {
+		w := request(s, "/audiobookshelf/playlist?"+key+"=garmin-adventure", "Bearer valid")
+		var books []Object
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &books) != nil || len(books) != 1 || books[0]["id"] != want {
+			t.Fatalf("%s resolved incorrectly: %d %s", key, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestPlaylistSelectorValidation(t *testing.T) {
+	s, _ := setup(t)
+	for query, status := range map[string]int{
+		"":                422,
+		"?playlist_name=": 422,
+		"?playlist_id=":   422,
+		"?playlist_id=garmin-adventure&playlist_name=Adventure": 422,
+		"?playlist_name=Adventure&playlist_name=Other":          422,
+		"?playlist_id=garmin-adventure&playlist_id=other":       422,
+		"?playlist_id=Adventure":                                404,
+		"?playlist_name=missing":                                404,
+	} {
+		if w := request(s, "/audiobookshelf/playlist"+query, "Bearer valid"); w.Code != status {
+			t.Fatalf("%s: got %d, want %d", query, w.Code, status)
+		}
 	}
 }

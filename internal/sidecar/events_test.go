@@ -79,7 +79,7 @@ func TestSocketAuthEventsAndHeartbeat(t *testing.T) {
 		socketSend(t, c, "41")
 	})
 	changes, ready := 0, 0
-	err := NewABS(up.URL+"/audiobookshelf", "test-token").eventSession(context.Background(), func() { changes++ }, func() { ready++ })
+	err := NewABS(up.URL+"/audiobookshelf", "test-token").eventSession(context.Background(), func(string) { changes++ }, func() { ready++ })
 	if err == nil || changes != 2 || ready != 1 {
 		t.Fatal(changes, ready, err)
 	}
@@ -105,7 +105,7 @@ func TestSocketFailureModes(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			count := 0
-			err := NewABS(up.URL+"/audiobookshelf", "test-token").eventSession(ctx, func() { count++ }, func() {})
+			err := NewABS(up.URL+"/audiobookshelf", "test-token").eventSession(ctx, func(string) { count++ }, func() {})
 			if err == nil || ctx.Err() != nil {
 				t.Fatal("session did not reject failed protocol promptly", err)
 			}
@@ -134,7 +134,7 @@ func TestSocketReconnectReauthenticates(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		NewABS(up.URL+"/audiobookshelf", "test-token").events(ctx, func() { changed <- struct{}{} }, func(string) {})
+		NewABS(up.URL+"/audiobookshelf", "test-token").events(ctx, func(string) { changed <- struct{}{} }, func(string) {})
 	}()
 	for i := 0; i < 2; i++ {
 		select {
@@ -175,7 +175,7 @@ func TestOfficialSocketIO(t *testing.T) {
 	}
 	a := NewABS(scanner.Text(), "reference-token")
 	ready, changed := 0, 0
-	err = a.eventSession(ctx, func() {
+	err = a.eventSession(ctx, func(string) {
 		changed++
 		if changed == 2 {
 			cancel()
@@ -348,6 +348,10 @@ func TestLiveEventsQueueConversionAndDeleteCache(t *testing.T) {
 	f.mu.Unlock()
 	notifications <- `42["playlist_updated",{"id":"first"}]`
 	waitState(t, s, "book-a", "ready")
+	status := decode(t, request(s, "/garmin/status", "Bearer valid"))
+	if status["socket"] != "connected" || status["last_socket_connected_at"] == nil || status["last_socket_event"] != "playlist_updated" || status["last_socket_event_at"] == nil {
+		t.Fatal("missing live-event diagnostics", status)
+	}
 	if request(s, "/api/items/book-a/file/chunk-001/download", "Bearer valid").Code != 200 {
 		t.Fatal("event-triggered conversion not downloadable")
 	}
@@ -360,4 +364,35 @@ func TestLiveEventsQueueConversionAndDeleteCache(t *testing.T) {
 		return len(books) == 0 && s.Cache.Manifest("book-a") == nil
 	})
 	assertUnavailable(t, s)
+}
+
+func TestSocketDiagnosticsDistinguishEventsFromPolling(t *testing.T) {
+	s, f := setup(t)
+	f.playlists = []Object{}
+	initial := decode(t, request(s, "/garmin/status", "Bearer valid"))
+	if initial["socket"] != "disconnected" || initial["last_socket_connected_at"] != nil || initial["last_socket_event_at"] != nil {
+		t.Fatal(initial)
+	}
+	s.socketState("connected")
+	s.socketEvent("init")
+	connected := s.synchronization()
+	if connected.LastConnected == nil || connected.LastEventAt != nil {
+		t.Fatal("handshake counted as a change", connected)
+	}
+	s.socketEvent("playlist_updated")
+	event := s.synchronization()
+	if event.LastEvent != "playlist_updated" || event.LastEventAt == nil {
+		t.Fatal(event)
+	}
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after := s.synchronization()
+	if after.LastEventAt != event.LastEventAt || after.LastSuccess.IsZero() {
+		t.Fatal("poll changed the event timestamp", after)
+	}
+	s.socketState("disconnected")
+	if after = s.synchronization(); after.Socket != "disconnected" || after.LastConnected != connected.LastConnected || after.LastEventAt != event.LastEventAt {
+		t.Fatal("disconnect lost history", after)
+	}
 }

@@ -15,9 +15,12 @@ import (
 )
 
 type SyncStatus struct {
-	Socket      string    `json:"socket"`
-	LastSuccess time.Time `json:"last_successful_refresh"`
-	LastError   string    `json:"last_error,omitempty"`
+	Socket        string     `json:"socket"`
+	LastConnected *time.Time `json:"last_socket_connected_at"`
+	LastEventAt   *time.Time `json:"last_socket_event_at"`
+	LastEvent     string     `json:"last_socket_event,omitempty"`
+	LastSuccess   time.Time  `json:"last_successful_refresh"`
+	LastError     string     `json:"last_error,omitempty"`
 }
 type Server struct {
 	events     chan struct{}
@@ -52,13 +55,32 @@ func (s *Server) synchronization() SyncStatus {
 	defer s.mu.RUnlock()
 	return s.syncStatus
 }
+func (s *Server) socketState(state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.syncStatus.Socket = state
+	if state == "connected" {
+		now := time.Now()
+		s.syncStatus.LastConnected = &now
+	}
+}
+func (s *Server) socketEvent(name string) {
+	if name != "init" {
+		now := time.Now()
+		s.mu.Lock()
+		s.syncStatus.LastEvent = name
+		s.syncStatus.LastEventAt = &now
+		s.mu.Unlock()
+	}
+	s.notify()
+}
 func (s *Server) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); s.Cache.Worker(ctx) }()
 	go func() {
 		defer wg.Done()
-		s.ABS.events(ctx, s.notify, func(state string) { s.mu.Lock(); s.syncStatus.Socket = state; s.mu.Unlock() })
+		s.ABS.events(ctx, s.socketEvent, s.socketState)
 	}()
 	defer wg.Wait()
 	refresh := func() {
@@ -159,15 +181,16 @@ func (s *Server) Reconcile(ctx context.Context) (err error) {
 	return s.Cache.Prune(keep)
 }
 func (s *Server) group(id string) *Playlist {
-	// Exact IDs take precedence so a name matching another playlist's ID cannot
-	// change which playlist a watch's saved selection resolves to.
 	for _, p := range s.Settings.Playlists {
 		if p.ID == id {
 			return &p
 		}
 	}
+	return nil
+}
+func (s *Server) groupByName(name string) *Playlist {
 	for _, p := range s.Settings.Playlists {
-		if normalize(p.Name) == normalize(id) {
+		if normalize(p.Name) == normalize(name) {
 			return &p
 		}
 	}
@@ -238,17 +261,30 @@ func (s *Server) playlists(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, items)
 }
 func (s *Server) playlist(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("playlist_id")
-	if !r.URL.Query().Has("playlist_id") {
-		fail(w, 422, "playlist_id is required")
+	q := r.URL.Query()
+	if q.Has("playlist_id") == q.Has("playlist_name") {
+		fail(w, 422, "Provide exactly one of playlist_id or playlist_name")
 		return
 	}
-	group := s.group(id)
+	key := "playlist_id"
+	if q.Has("playlist_name") {
+		key = "playlist_name"
+	}
+	if len(q[key]) != 1 || strings.TrimSpace(q.Get(key)) == "" {
+		fail(w, 422, key+" must contain one non-empty value")
+		return
+	}
+	var group *Playlist
+	if key == "playlist_id" {
+		group = s.group(q.Get(key))
+	} else {
+		group = s.groupByName(q.Get(key))
+	}
 	if group == nil {
 		fail(w, 404, "Unknown virtual playlist")
 		return
 	}
-	id = group.ID
+	id := group.ID
 	books, ok := s.snapshot(id)
 	if !ok {
 		if err := s.Reconcile(r.Context()); err != nil {

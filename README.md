@@ -26,7 +26,7 @@ Each name creates one watch playlist by merging **all** matching ABS playlists a
 
 Configured playlists remain visible when no source matches. Deleted and recreated playlists are rediscovered automatically. A failed or malformed library/playlist response preserves the previous complete snapshot and cache. Multiple matching playlists within one library are merged as well.
 
-`GET /audiobookshelf/playlists` lists the stable IDs and display names. `GET /audiobookshelf/playlist?playlist_id=Garmin` accepts either a configured name (ignoring case and extra whitespace) or the generated ID (`garmin-garmin` in this example). Exact IDs take precedence if a name happens to match another playlist's ID. The `playlist_id` query parameter is required.
+`GET /audiobookshelf/playlists` lists the stable IDs and display names. Retrieve a playlist with either `GET /audiobookshelf/playlist?playlist_id=garmin-garmin` (exact ID) or `GET /audiobookshelf/playlist?playlist_name=Garmin` (name, ignoring case and extra whitespace). Supply exactly one non-empty selector; supplying both or neither returns 422. Names are not accepted in `playlist_id`.
 
 Watch playlist IDs are derived from normalized names: `Adventure` becomes `garmin-adventure`. Punctuated or non-ASCII names receive a stable hash suffix. Conflicting IDs (for example `A B` and `A-B`) fail startup with a clear error. Renaming an entry changes its ID; changing only case or whitespace does not.
 
@@ -46,7 +46,7 @@ The connection uses `/socket.io/` under the `ABS_URL` base path and supports HTT
 
 Each successful refresh checks source audio metadata (file identity, order, name, size, modification timestamps, duration, and conversion settings). A changed fingerprint queues a rebuild; book titles, covers, and listening progress do not. Detection depends on ABS scanning changed files and reporting their updated metadata. The previous complete rendition remains available until the new manifest is atomically published. Open downloads can finish using the old rendition. Removing a book from every configured playlist cancels queued/running work and removes its cache; a superseded conversion cannot publish stale output.
 
-`GET /garmin/status` requires the usual Bearer token and reports socket state, last successful refresh, and the latest refresh failure. Playlist-status responses include the same `sync` information. During a rebuild, `cache.state` stays `ready` while the old rendition is usable and `cache.refresh_state` reports `queued`, `generating`, or `failed`.
+`GET /garmin/status` requires the usual Bearer token and reports socket state, `last_socket_connected_at`, `last_socket_event`, `last_socket_event_at`, last successful refresh, and the latest refresh failure. `connected` means the Socket.IO session authenticated successfully. The event fields record the most recent relevant ABS notification received, not a confirmed media change; they remain empty/null until one arrives. Polling and the initial socket handshake do not update them. Timestamps describe this process lifetime and reset on restart. Playlist-status responses include the same `sync` information. During a rebuild, `cache.state` stays `ready` while the old rendition is usable and `cache.refresh_state` reports `queued`, `generating`, or `failed`.
 
 ## Tests and container releases
 
