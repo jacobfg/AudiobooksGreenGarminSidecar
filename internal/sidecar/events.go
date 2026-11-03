@@ -15,7 +15,7 @@ import (
 // ABS uses Engine.IO v4 and Socket.IO v5 JSON events in the default namespace.
 // Connect directly over WebSocket; REST polling remains the fallback. Binary
 // events and other namespaces are intentionally outside this client's scope.
-func (a *ABS) events(ctx context.Context, changed func(), state func(string)) {
+func (a *ABS) events(ctx context.Context, changed func(string), state func(string)) {
 	delay := time.Second
 	defer state("disconnected")
 	for ctx.Err() == nil {
@@ -59,7 +59,7 @@ func socketURL(base string) (string, error) {
 	u.Fragment = ""
 	return u.String(), nil
 }
-func (a *ABS) eventSession(ctx context.Context, changed func(), ready func()) error {
+func (a *ABS) eventSession(ctx context.Context, changed func(string), ready func()) error {
 	address, err := socketURL(a.URL)
 	if err != nil {
 		return err
@@ -161,9 +161,9 @@ func (a *ABS) eventSession(ctx context.Context, changed func(), ready func()) er
 			if name == "init" && sentAuth && !authed {
 				authed = true
 				ready()
-				changed()
+				changed(name)
 			} else if authed && refreshEvent(name) {
-				changed()
+				changed(name)
 			}
 			if ack != "" {
 				if err = send("43" + ack + "[]"); err != nil {
