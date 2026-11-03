@@ -12,6 +12,7 @@ services:
       CACHE_DIR: /app/cache
       POLL_INTERVAL_SECONDS: "300"
       AUTH_CACHE_SECONDS: "300"
+      STAGING_RETENTION_SECONDS: "86400"
       CACHE_CHUNK_MINUTES: "30"
       CACHE_BITRATE: 96k
     volumes:

@@ -4,6 +4,10 @@
 .venv
 **/__pycache__
 tests
+testdata
+**/*_test.go
+sidecar-server
+coverage.out
 media-cache
 config.yaml
 abs_token.txt

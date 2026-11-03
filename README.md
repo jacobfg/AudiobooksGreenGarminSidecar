@@ -1,6 +1,6 @@
 # AudiobooksGreen Garmin Sidecar
 
-Personal sidecar for [AudiobooksGreen](https://github.com/fabrikant/AudiobooksGreen). It presents virtual watch playlists that merge ABS playlists across libraries, pre-renders Garmin-compatible MP3 media, and serves the generated chunks.
+Go sidecar for [AudiobooksGreen](https://github.com/fabrikant/AudiobooksGreen). It presents virtual watch playlists that merge ABS playlists across libraries, pre-renders Garmin-compatible MP3 media, and serves the generated chunks.
 
 It intentionally does **not** modify the generic AudiobooksGreen proxy or the watch app.
 
@@ -11,6 +11,7 @@ Copy `config.example.yaml` to `config.yaml`, set your playlist sources, and set 
 - `ABS_URL`: private ABS base URL reachable from the sidecar.
 - `ABS_TOKEN` or `ABS_TOKEN_FILE`: API token for the ABS account whose playlists are configured, or the path to a UTF-8 file containing it. Set only one. Surrounding whitespace is stripped from file contents; empty or unreadable files fail startup.
 - `CACHE_DIR` (default `/app/cache`), `POLL_INTERVAL_SECONDS` (default `300`), `AUTH_CACHE_SECONDS` (default `300`).
+- `STAGING_RETENTION_SECONDS` (default `86400`, 24 hours): retention for failed or cancelled conversion scratch files; must be positive.
 - `CACHE_CHUNK_MINUTES` (default `30`) and `CACHE_BITRATE` (default `96k`).
 
 `source_playlist_ids` accepts `library name/playlist name` entries and existing ABS playlist IDs, including a mix of both:
@@ -32,19 +33,44 @@ Names are resolved again on every poll and status refresh. Missing libraries or 
 
 To use a Docker Compose secret, save the token in `abs_token.txt`, remove `ABS_TOKEN` from the Compose environment, and uncomment `ABS_TOKEN_FILE` and both `secrets` sections in `docker-compose.example.yml`. Compose mounts the file at `/run/secrets/abs_token`. Keep the token file out of version control. The token is read at startup; recreate the container after changing it.
 
-The worker runs one conversion at a time. A cache entry is published only after all chunks and its manifest are complete. Failed jobs remain under `.staging` for diagnosis and are retried by the next poll.
+The worker runs one conversion at a time. A cache entry is published only after all chunks and its manifest are complete. Failed jobs remain under `.staging` for diagnosis and are retried by the next poll. Abandoned staging directories are automatically removed at startup and on each poll once their retention period expires, even when ABS is unavailable. Active conversions are protected regardless of age. Retention starts when an attempt fails or is cancelled; after an abrupt process exit, cleanup uses the staging directory’s last modification time. Successful attempts delete their own staging directory immediately. Use one sidecar process per cache volume so active work is tracked by its owner.
 
 ## Tests and container releases
 
-GitHub Actions runs the Python tests on pushes and pull requests, builds Linux AMD64 and ARM64 images, and smoke-tests startup with both token sources, the health endpoint, authentication enforcement, and the bundled FFmpeg tools. Run the Python tests locally with `python -m pip install -r requirements-dev.txt` followed by `python -m pytest -q`.
+Requires Go 1.27.3 or newer. Install FFmpeg and FFprobe on your PATH for local development and tests.
+
+```sh
+go test -race -cover ./...
+go vet ./...
+go build -trimpath -ldflags="-s -w" -o sidecar-server ./cmd/sidecar
+SIDECAR_CONFIG=config.yaml ./sidecar-server
+```
+
+Tests use a local mock ABS HTTP server, including authentication, playlist discovery, progress, and source downloads. The checked-in synthetic MP3 and chaptered M4B fixtures in `testdata/` exercise real FFmpeg conversion, chapter splitting, cached downloads, and HTTP range requests. No real ABS instance or token is needed. FFmpeg is required; integration tests fail if it is missing.
+
+GitHub Actions runs Go tests with race detection and vet on pushes and pull requests, builds Linux AMD64 and ARM64 images, and smoke-tests startup with both token sources, the health endpoint, authentication enforcement, and bundled FFmpeg tools.
+
+The `scratch` runtime image contains a stripped Go binary, CA certificates, and the same static FFmpeg tools. Existing environment variables, YAML configuration, port 8082, HTTP routes, and cache manifests remain compatible. Keep the existing cache volume when upgrading. Conversion still runs one job at a time; FFmpeg remains the main CPU consumer during encoding. Measure idle and conversion memory with `docker stats` on your server before choosing resource limits; a smaller service runtime does not eliminate FFmpeg's memory requirements.
 
 To publish a release, tag a commit on `main` with a stable version such as `0.1.0` (no `v` prefix) and push the tag. The publish workflow checks the tag and its ancestry, runs the tests, and pushes both architectures to `ghcr.io/jacobfg/audiobooksgreengarminsidecar` with the version and `latest` tags, using the repository's `GITHUB_TOKEN`. To use a published image, replace `build: .` in Compose with `image: ghcr.io/jacobfg/audiobooksgreengarminsidecar:0.1.0`, substituting your published version.
 
+### Migration validation
+
+The original Python suite passed all 31 tests before migration and again before its removal. Its behavior is covered by the Go regression suite, with additional real audio conversion and download tests. Additional regression tests cover uncached watch requests, pagination, interrupted downloads, encoder failures after a completed chunk, invalid-cache rebuilding, unsupported sources, ABS status failures, cancellation of an active FFmpeg process, and staging retention with active-job protection and cleanup during ABS outages. The Go server package reached 92.8% statement coverage with race detection; `go vet` and Linux AMD64/ARM64 cross-builds passed.
+
+An indicative local macOS ARM64 measurement against the same empty mock ABS playlist, after ten authenticated requests, showed idle RSS of **72.9 MiB for Python** and **13.7 MiB for Go** (about 81% lower). Stripped Linux binaries were about **7.7 MiB AMD64** and **7.1 MiB ARM64**. These are local process measurements, not container memory or conversion benchmarks. Docker image builds and runtime smoke tests need CI or a working Docker installation; the development machine's Docker context was unavailable.
+
 ## Scheduled dependency updates
 
-The Renovate Bot workflow runs daily at 06:04 UTC and supports manual runs with optional debug logging, following the [container-scheduler setup](https://github.com/jacobfg/container-scheduler/blob/main/.github/workflows/renovatebot.yml). It groups stable minor and patch updates to the Python and FFmpeg Docker images, the CI Python version, and packages in `requirements.txt` and `requirements-dev.txt` into one maintenance PR. Direct Python dependencies are pinned so Renovate can propose version changes; transitive dependencies are still resolved by pip. Existing PRs are refreshed; no updates means no new PR. Major upgrades appear in the Dependency Dashboard issue and require checkbox approval before Renovate creates a PR. Merging remains manual. GitHub Actions and the pinned Renovate action/engine versions are maintained manually.
+The Renovate Bot workflow runs daily at 06:04 UTC and supports manual runs with optional debug logging, following the [container-scheduler setup](https://github.com/jacobfg/container-scheduler/blob/main/.github/workflows/renovatebot.yml). It groups stable minor and patch updates to Go modules (including indirect dependencies), the Go build and runtime images, FFmpeg, and the documented Go version into one maintenance PR. Go dependencies are recorded in `go.mod` and verified by `go.sum`; Renovate runs `go mod tidy` when updating them. CI reads its Go version from `go.mod`. Existing PRs are refreshed; no updates means no new PR. Major upgrades appear in the Dependency Dashboard issue and require checkbox approval before Renovate creates a PR. Merging remains manual. GitHub Actions and the pinned Renovate action/engine versions are maintained manually.
 
-Before running it, add an Actions secret named `RENOVATE_TOKEN` containing a dedicated GitHub PAT authorized for `jacobfg/AudiobooksGreenGarminSidecar`, with contents, pull-request, and Issues write access, permission to update workflow files (for the CI Python version), and the read permissions required by [Renovate](https://docs.renovatebot.com/modules/platform/github/). A fine-grained token must explicitly include this repository. The dedicated token allows Renovate PRs to trigger CI; do not substitute `GITHUB_TOKEN`. The workflow checks repository access before starting. Scheduled runs begin after merge to `main`.
+Renovate adds `docker.io/` to Dockerfile and Compose images without an explicit
+registry, including namespaced Docker Hub images. Existing registry hosts,
+locally built application and smoke-test images, and `scratch` are preserved.
+Compose image versions remain under manual maintenance. Dockerfile image
+versions continue to follow the application maintenance policy above.
+
+Before running it, add an Actions secret named `RENOVATE_TOKEN` containing a dedicated GitHub PAT authorized for `jacobfg/AudiobooksGreenGarminSidecar`, with contents, pull-request, and Issues write access, permission to update workflow files (for workflow maintenance), and the read permissions required by [Renovate](https://docs.renovatebot.com/modules/platform/github/). A fine-grained token must explicitly include this repository. The dedicated token allows Renovate PRs to trigger CI; do not substitute `GITHUB_TOKEN`. The workflow checks repository access before starting. Scheduled runs begin after merge to `main`.
 
 ## Watch and Traefik
 

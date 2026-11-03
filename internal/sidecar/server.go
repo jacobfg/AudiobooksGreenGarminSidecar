@@ -1,0 +1,329 @@
+package sidecar
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"net/http"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Server struct {
+	Settings Settings
+	ABS      *ABS
+	Cache    *Cache
+	mu       sync.RWMutex
+	refresh  sync.Mutex
+	books    map[string][]Object
+	tokens   map[[32]byte]time.Time
+}
+
+func NewServer(s Settings) (*Server, error) {
+	a := NewABS(s.ABSURL, s.Token)
+	c, err := NewCache(s, a)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{Settings: s, ABS: a, Cache: c, books: map[string][]Object{}, tokens: map[[32]byte]time.Time{}}, nil
+}
+func (s *Server) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); s.Cache.Worker(ctx) }()
+	defer wg.Wait()
+	for {
+		// Cleanup must run even when ABS is unavailable and reconciliation fails.
+		if err := s.Cache.CleanupStaging(time.Now()); err != nil {
+			slog.Error("Staging cleanup failed", "error", err)
+		}
+		if err := s.Reconcile(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("ABS playlist reconciliation failed", "error", err)
+		}
+		timer := time.NewTimer(s.Settings.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+func (s *Server) Reconcile(ctx context.Context) error {
+	s.refresh.Lock()
+	defer s.refresh.Unlock()
+	names := []string{}
+	for _, p := range s.Settings.Playlists {
+		for _, source := range p.Sources {
+			if strings.Contains(source, "/") {
+				names = append(names, source)
+			}
+		}
+	}
+	resolved, err := s.ABS.Resolve(ctx, names)
+	if err != nil {
+		return err
+	}
+	refreshed := map[string][]Object{}
+	keep := map[string]bool{}
+	for _, p := range s.Settings.Playlists {
+		books := []Object{}
+		seen := map[string]bool{}
+		for _, source := range p.Sources {
+			id := source
+			if strings.Contains(source, "/") {
+				id = resolved[source]
+			}
+			if id == "" {
+				continue
+			}
+			items, err := s.ABS.Playlist(ctx, id)
+			if err != nil {
+				return err
+			}
+			for _, book := range items {
+				id := str(book["id"])
+				if !seen[id] {
+					books = append(books, book)
+					seen[id] = true
+					keep[id] = true
+				}
+			}
+		}
+		refreshed[p.ID] = books
+	}
+	s.mu.Lock()
+	s.books = refreshed
+	s.mu.Unlock()
+	s.Cache.QueueAll(keep)
+	return s.Cache.Prune(keep)
+}
+func (s *Server) group(id string) *Playlist {
+	for _, p := range s.Settings.Playlists {
+		if p.ID == id {
+			return &p
+		}
+	}
+	return nil
+}
+func (s *Server) snapshot(id string) ([]Object, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	b, ok := s.books[id]
+	return b, ok
+}
+func respond(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func fail(w http.ResponseWriter, status int, message string) {
+	respond(w, status, Object{"detail": message})
+}
+func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		if !strings.HasPrefix(token, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(token, "Bearer ")) == "" {
+			fail(w, 401, "Bearer token required")
+			return
+		}
+		key := sha256.Sum256([]byte(token))
+		now := time.Now()
+		s.mu.RLock()
+		expires := s.tokens[key]
+		s.mu.RUnlock()
+		if !expires.After(now) {
+			if _, err := s.ABS.json(r.Context(), "/api/me", token, false); err != nil {
+				fail(w, 401, "Invalid Audiobookshelf token")
+				return
+			}
+			s.mu.Lock()
+			for k, expiry := range s.tokens {
+				if !expiry.After(now) {
+					delete(s.tokens, k)
+				}
+			}
+			if len(s.tokens) >= 4096 {
+				clear(s.tokens)
+			}
+			s.tokens[key] = now.Add(s.Settings.AuthCache)
+			s.mu.Unlock()
+		}
+		next(w, r)
+	}
+}
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, Object{"status": "ok"}) })
+	mux.HandleFunc("GET /audiobookshelf/playlists", s.auth(s.playlists))
+	mux.HandleFunc("GET /audiobookshelf/playlist", s.auth(s.playlist))
+	mux.HandleFunc("GET /audiobookshelf/book", s.auth(s.book))
+	mux.HandleFunc("GET /garmin/playlist-status/{name}", s.auth(s.status))
+	mux.HandleFunc("GET /api/items/{book}/file/{file}/download", s.auth(s.download))
+	return mux
+}
+func (s *Server) playlists(w http.ResponseWriter, r *http.Request) {
+	items := []Object{}
+	for _, p := range s.Settings.Playlists {
+		items = append(items, Object{"id": p.ID, "name": p.Name, "libraryId": "garmin-sidecar"})
+	}
+	respond(w, 200, items)
+}
+func (s *Server) playlist(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("playlist_id")
+	if !r.URL.Query().Has("playlist_id") {
+		fail(w, 422, "playlist_id is required")
+		return
+	}
+	if s.group(id) == nil {
+		fail(w, 404, "Unknown virtual playlist")
+		return
+	}
+	books, ok := s.snapshot(id)
+	if !ok {
+		if err := s.Reconcile(r.Context()); err != nil {
+			s.upstreamError(w, err)
+			return
+		}
+		books, _ = s.snapshot(id)
+	}
+	items := []Object{}
+	for _, b := range books {
+		items = append(items, summary(b))
+	}
+	respond(w, 200, items)
+}
+func (s *Server) upstreamError(w http.ResponseWriter, err error) {
+	slog.Error("ABS request failed", "error", err)
+	fail(w, 502, "Audiobookshelf request failed")
+}
+func (s *Server) book(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if !q.Has("book_id") {
+		fail(w, 422, "book_id is required")
+		return
+	}
+	id := q.Get("book_id")
+	skip, limit := 0, 0
+	for name, target := range map[string]*int{"skip": &skip, "limit": &limit} {
+		if q.Has(name) {
+			n, err := strconv.Atoi(q.Get(name))
+			if err != nil {
+				fail(w, 422, name+" must be an integer")
+				return
+			}
+			*target = n
+		}
+	}
+	result := Object{"files": []File{}, "skip": skip, "limit": limit, "total": 0}
+	s.mu.RLock()
+	found := false
+	for _, books := range s.books {
+		for _, b := range books {
+			if str(b["id"]) == id {
+				found = true
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if found {
+		m := s.Cache.Manifest(id)
+		if m == nil {
+			s.Cache.Queue(id)
+		} else {
+			result["total"] = len(m.Files)
+			start := max(0, min(skip, len(m.Files)))
+			end := len(m.Files)
+			if limit > 0 && limit < end-start {
+				end = start + limit
+			}
+			files := []File{}
+			for _, f := range m.Files[start:end] {
+				f.Path = ""
+				files = append(files, f)
+			}
+			result["files"] = files
+		}
+	}
+	respond(w, 200, result)
+}
+func formatHMS(seconds float64) string {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
+		seconds = 0
+	}
+	n := int64(seconds)
+	return fmt.Sprintf("%d:%02d:%02d", n/3600, n/60%60, n%60)
+}
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	var group *Playlist
+	for _, p := range s.Settings.Playlists {
+		if strings.EqualFold(p.Name, r.PathValue("name")) {
+			group = &p
+			break
+		}
+	}
+	if group == nil {
+		fail(w, 404, "Unknown virtual playlist name")
+		return
+	}
+	if err := s.Reconcile(r.Context()); err != nil {
+		s.upstreamError(w, err)
+		return
+	}
+	books, _ := s.snapshot(group.ID)
+	result := []Object{}
+	for _, b := range books {
+		id := str(b["id"])
+		item, err := s.ABS.Item(r.Context(), id)
+		if err != nil {
+			s.upstreamError(w, err)
+			return
+		}
+		progress, err := s.ABS.Progress(r.Context(), id)
+		if err != nil {
+			s.upstreamError(w, err)
+			return
+		}
+		sources := []Object{}
+		duration := 0.
+		for _, v := range arr(obj(item["media"])["audioFiles"]) {
+			f := obj(v)
+			d := number(f["duration"])
+			ino := ""
+			if f["ino"] != nil {
+				ino = fmt.Sprint(f["ino"])
+			}
+			sources = append(sources, Object{"id": ino, "filename": str(obj(f["metadata"])["filename"]), "duration_seconds": d, "duration": formatHMS(d)})
+			duration += d
+		}
+		current := number(progress["currentTime"])
+		cache := s.Cache.Status(id)
+		cache["duration"] = formatHMS(number(cache["duration_seconds"]))
+		row := summary(item)
+		row["duration_seconds"] = duration
+		row["duration"] = formatHMS(duration)
+		row["position_seconds"] = current
+		row["position"] = formatHMS(current)
+		row["progress"] = number(progress["progress"])
+		row["source_files"] = sources
+		row["cache"] = cache
+		result = append(result, row)
+	}
+	respond(w, 200, Object{"playlist": group, "book_count": len(books), "books": result})
+}
+func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+	path := s.Cache.File(r.PathValue("book"), r.PathValue("file"))
+	if path == "" {
+		fail(w, 404, "Cached Garmin media not found")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(path)))
+	http.ServeFile(w, r, path)
+}

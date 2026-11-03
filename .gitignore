@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 media-cache/
 abs_token.txt
+sidecar-server
+coverage.out
