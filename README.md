@@ -85,6 +85,12 @@ locally built application and smoke-test images, and `scratch` are preserved.
 Compose image versions remain under manual maintenance. Dockerfile image
 versions continue to follow the application maintenance policy above.
 
+Renovate adds `docker.io/` to Dockerfile and Compose images without an explicit
+registry, including namespaced Docker Hub images. Existing registry hosts,
+locally built application and smoke-test images, and `scratch` are preserved.
+Compose image versions remain under manual maintenance. Dockerfile image
+versions continue to follow the application maintenance policy above.
+
 Before running it, add an Actions secret named `RENOVATE_TOKEN` containing a dedicated GitHub PAT authorized for `jacobfg/AudiobooksGreenGarminSidecar`, with contents, pull-request, and Issues write access, permission to update workflow files (for workflow maintenance), and the read permissions required by [Renovate](https://docs.renovatebot.com/modules/platform/github/). A fine-grained token must explicitly include this repository. The dedicated token allows Renovate PRs to trigger CI; do not substitute `GITHUB_TOKEN`. The workflow checks repository access before starting. Scheduled runs begin after merge to `main`.
 
 ## Watch and Traefik
