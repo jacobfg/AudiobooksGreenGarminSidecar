@@ -90,7 +90,7 @@ func TestBookPaginationSelectsFiles(t *testing.T) {
 	s, _ := setup(t)
 	manifest(t, s, "book-a")
 	manifest(t, s, "book-b")
-	m := Manifest{}
+	m := Manifest{Fingerprint: s.Cache.Manifest("book-a").Fingerprint}
 	for i := 1; i <= 4; i++ {
 		name := fmt.Sprintf("%04d.mp3", i)
 		write(t, filepath.Join(s.Cache.root, "book-a", name), []byte("mp3"))

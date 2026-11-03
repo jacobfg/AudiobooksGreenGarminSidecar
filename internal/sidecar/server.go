@@ -8,14 +8,21 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+type SyncStatus struct {
+	Socket      string    `json:"socket"`
+	LastSuccess time.Time `json:"last_successful_refresh"`
+	LastError   string    `json:"last_error,omitempty"`
+}
 type Server struct {
+	events     chan struct{}
+	syncStatus SyncStatus
+
 	Settings Settings
 	ABS      *ABS
 	Cache    *Cache
@@ -23,6 +30,7 @@ type Server struct {
 	refresh  sync.Mutex
 	books    map[string][]Object
 	tokens   map[[32]byte]time.Time
+	sources  map[string][]string
 }
 
 func NewServer(s Settings) (*Server, error) {
@@ -31,58 +39,94 @@ func NewServer(s Settings) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Settings: s, ABS: a, Cache: c, books: map[string][]Object{}, tokens: map[[32]byte]time.Time{}}, nil
+	return &Server{events: make(chan struct{}, 1), syncStatus: SyncStatus{Socket: "disconnected"}, Settings: s, ABS: a, Cache: c, books: map[string][]Object{}, tokens: map[[32]byte]time.Time{}}, nil
+}
+func (s *Server) notify() {
+	select {
+	case s.events <- struct{}{}:
+	default:
+	}
+}
+func (s *Server) synchronization() SyncStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.syncStatus
 }
 func (s *Server) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() { defer wg.Done(); s.Cache.Worker(ctx) }()
+	go func() {
+		defer wg.Done()
+		s.ABS.events(ctx, s.notify, func(state string) { s.mu.Lock(); s.syncStatus.Socket = state; s.mu.Unlock() })
+	}()
 	defer wg.Wait()
-	for {
-		// Cleanup must run even when ABS is unavailable and reconciliation fails.
+	refresh := func() {
 		if err := s.Cache.CleanupStaging(time.Now()); err != nil {
 			slog.Error("Staging cleanup failed", "error", err)
 		}
 		if err := s.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("ABS playlist reconciliation failed", "error", err)
 		}
-		timer := time.NewTimer(s.Settings.PollInterval)
+	}
+	refresh()
+	ticker := time.NewTicker(s.Settings.PollInterval)
+	defer ticker.Stop()
+	var debounce *time.Timer
+	var wake <-chan time.Time
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}()
+	for {
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-ticker.C:
+			refresh()
+		case <-s.events:
+			if wake == nil {
+				debounce = time.NewTimer(500 * time.Millisecond)
+				wake = debounce.C
+			}
+		case <-wake:
+			wake = nil
+			// Drain notifications already represented by this refresh. Events arriving
+			// during HTTP reconciliation remain queued for a subsequent refresh.
+			select {
+			case <-s.events:
+			default:
+			}
+			refresh()
 		}
 	}
 }
-func (s *Server) Reconcile(ctx context.Context) error {
+func (s *Server) Reconcile(ctx context.Context) (err error) {
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err != nil {
+			s.syncStatus.LastError = "Audiobookshelf refresh failed"
+		} else {
+			s.syncStatus.LastSuccess = time.Now()
+			s.syncStatus.LastError = ""
+		}
+	}()
+
 	s.refresh.Lock()
 	defer s.refresh.Unlock()
-	names := []string{}
-	for _, p := range s.Settings.Playlists {
-		for _, source := range p.Sources {
-			if strings.Contains(source, "/") {
-				names = append(names, source)
-			}
-		}
-	}
-	resolved, err := s.ABS.Resolve(ctx, names)
+	resolved, err := s.ABS.Discover(ctx, s.Settings.Playlists)
 	if err != nil {
 		return err
 	}
 	refreshed := map[string][]Object{}
 	keep := map[string]bool{}
+	desired := map[string]string{}
 	for _, p := range s.Settings.Playlists {
 		books := []Object{}
 		seen := map[string]bool{}
-		for _, source := range p.Sources {
-			id := source
-			if strings.Contains(source, "/") {
-				id = resolved[source]
-			}
-			if id == "" {
-				continue
-			}
+		for _, id := range resolved[p.ID] {
 			items, err := s.ABS.Playlist(ctx, id)
 			if err != nil {
 				return err
@@ -98,10 +142,20 @@ func (s *Server) Reconcile(ctx context.Context) error {
 		}
 		refreshed[p.ID] = books
 	}
+	// Fetch source metadata once per managed book so polling also detects audio
+	// changes missed while the socket was disconnected.
+	for id := range keep {
+		item, e := s.ABS.Item(ctx, id)
+		if e != nil {
+			return e
+		}
+		desired[id] = sourceFingerprint(item, s.Settings)
+	}
+	s.Cache.SyncSources(desired)
 	s.mu.Lock()
 	s.books = refreshed
+	s.sources = resolved
 	s.mu.Unlock()
-	s.Cache.QueueAll(keep)
 	return s.Cache.Prune(keep)
 }
 func (s *Server) group(id string) *Playlist {
@@ -165,6 +219,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /audiobookshelf/playlist", s.auth(s.playlist))
 	mux.HandleFunc("GET /audiobookshelf/book", s.auth(s.book))
 	mux.HandleFunc("GET /garmin/playlist-status/{name}", s.auth(s.status))
+	mux.HandleFunc("GET /garmin/status", s.auth(func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.synchronization()) }))
 	mux.HandleFunc("GET /api/items/{book}/file/{file}/download", s.auth(s.download))
 	return mux
 }
@@ -277,6 +332,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	books, _ := s.snapshot(group.ID)
+	s.mu.RLock()
+	group.Sources = append([]string{}, s.sources[group.ID]...)
+	s.mu.RUnlock()
 	result := []Object{}
 	for _, b := range books {
 		id := str(b["id"])
@@ -315,15 +373,21 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		row["cache"] = cache
 		result = append(result, row)
 	}
-	respond(w, 200, Object{"playlist": group, "book_count": len(books), "books": result})
+	respond(w, 200, Object{"playlist": group, "book_count": len(books), "books": result, "sync": s.synchronization()})
 }
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	path := s.Cache.File(r.PathValue("book"), r.PathValue("file"))
-	if path == "" {
+	file, name, err := s.Cache.Open(r.PathValue("book"), r.PathValue("file"))
+	if err != nil {
+		fail(w, 404, "Cached Garmin media not found")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
 		fail(w, 404, "Cached Garmin media not found")
 		return
 	}
 	w.Header().Set("Content-Type", "audio/mpeg")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(path)))
-	http.ServeFile(w, r, path)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	http.ServeContent(w, r, name, info.ModTime(), file)
 }

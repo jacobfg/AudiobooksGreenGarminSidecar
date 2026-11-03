@@ -169,9 +169,9 @@ func TestPollingCleansStagingWhileABSUnavailable(t *testing.T) {
 }
 
 func TestStagingRetentionConfiguration(t *testing.T) {
-	path := configEnv(t)
+	configEnv(t)
 	t.Setenv("ABS_TOKEN", "token")
-	s, err := LoadSettings(path)
+	s, err := LoadSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestStagingRetentionConfiguration(t *testing.T) {
 		t.Fatal(s.StagingRetention)
 	}
 	t.Setenv("STAGING_RETENTION_SECONDS", "3600")
-	s, err = LoadSettings(path)
+	s, err = LoadSettings()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,7 +20,7 @@ func main() {
 	}
 }
 func run() error {
-	s, err := sidecar.LoadSettings("")
+	s, err := sidecar.LoadSettings()
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -82,61 +83,69 @@ func (a *ABS) json(ctx context.Context, path, token string, missing bool) (Objec
 	return result, err
 }
 func normalize(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
-func (a *ABS) Resolve(ctx context.Context, sources []string) (map[string]string, error) {
-	result := map[string]string{}
-	if len(sources) == 0 {
-		return result, nil
-	}
-	libs, err := a.json(ctx, "/api/libraries", "", false)
+
+// Discover searches each accessible library using the supported per-library API.
+// Any incomplete/malformed listing fails the whole snapshot, preventing pruning.
+func (a *ABS) Discover(ctx context.Context, groups []Playlist) (map[string][]string, error) {
+	payload, err := a.json(ctx, "/api/libraries", "", false)
 	if err != nil {
 		return nil, err
 	}
-	pls, err := a.json(ctx, "/api/playlists", "", false)
-	if err != nil {
-		return nil, err
+	libraries, ok := payload["libraries"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid ABS library listing")
 	}
-	for _, v := range []struct {
-		data   Object
-		key    string
-		fields []string
-	}{{libs, "libraries", []string{"id", "name"}}, {pls, "playlists", []string{"id", "name", "libraryId"}}} {
-		entries, ok := v.data[v.key].([]any)
-		if !ok {
-			return nil, fmt.Errorf("ABS returned an invalid library or playlist listing")
+	ids := []string{}
+	for _, v := range libraries {
+		l := obj(v)
+		id, ok := l["id"].(string)
+		if !ok || id == "" {
+			return nil, fmt.Errorf("invalid ABS library ID")
 		}
-		for _, e := range entries {
-			for _, f := range v.fields {
-				if _, ok := obj(e)[f].(string); !ok {
-					return nil, fmt.Errorf("ABS returned an invalid library or playlist listing")
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := map[string][]string{}
+	wanted := map[string]string{}
+	for _, p := range groups {
+		wanted[normalize(p.Name)] = p.ID
+		result[p.ID] = []string{}
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		for page := 0; ; page++ {
+			path := fmt.Sprintf("/api/libraries/%s/playlists?limit=100&page=%d", url.PathEscape(id), page)
+			payload, err := a.json(ctx, path, "", false)
+			if err != nil {
+				return nil, err
+			}
+			entries, ok := payload["results"].([]any)
+			total, valid := payload["total"].(float64)
+			if !ok || !valid || total < 0 || total != float64(int(total)) || page >= 10000 {
+				return nil, fmt.Errorf("invalid ABS playlist listing")
+			}
+			if len(entries) < min(100, max(0, int(total)-page*100)) {
+				return nil, fmt.Errorf("incomplete ABS playlist listing")
+			}
+			for _, v := range entries {
+				p := obj(v)
+				pid, pok := p["id"].(string)
+				name, nok := p["name"].(string)
+				if !pok || !nok || pid == "" || str(p["libraryId"]) != id {
+					return nil, fmt.Errorf("invalid ABS playlist entry")
+				}
+				if group, match := wanted[normalize(name)]; match && !seen[pid] {
+					result[group] = append(result[group], pid)
+					seen[pid] = true
 				}
 			}
+			if float64((page+1)*100) >= total {
+				break
+			}
 		}
 	}
-	for _, source := range sources {
-		parts := strings.SplitN(source, "/", 2)
-		libID := ""
-		count := 0
-		for _, v := range arr(libs["libraries"]) {
-			l := obj(v)
-			if normalize(str(l["name"])) == normalize(parts[0]) {
-				libID = str(l["id"])
-				count++
-			}
-		}
-		if count > 1 {
-			return nil, fmt.Errorf("Ambiguous ABS library name in %q; use a playlist ID", source)
-		}
-		count = 0
-		for _, v := range arr(pls["playlists"]) {
-			p := obj(v)
-			if libID != "" && str(p["libraryId"]) == libID && normalize(str(p["name"])) == normalize(parts[1]) {
-				result[source] = str(p["id"])
-				count++
-			}
-		}
-		if count > 1 {
-			return nil, fmt.Errorf("Ambiguous ABS playlist name in %q; use a playlist ID", source)
-		}
+	for id := range result {
+		sort.Strings(result[id])
 	}
 	return result, nil
 }

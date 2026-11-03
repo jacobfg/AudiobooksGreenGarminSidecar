@@ -14,6 +14,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: testdata/socketio/package-lock.json
+      - name: Install the Socket.IO compatibility test server
+        run: npm ci --prefix testdata/socketio --ignore-scripts --no-audit --no-fund
       - name: Install FFmpeg for audio integration tests
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Check formatting
@@ -21,7 +28,7 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Run tests with race detection
-        run: go test -race -cover ./...
+        run: SIDECAR_SOCKETIO_TEST=1 go test -race -cover ./...
 
   container:
     runs-on: ubuntu-latest
@@ -49,7 +56,6 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/sidecar-config
-          cp config.example.yaml /tmp/sidecar-config/config.yaml
           printf 'smoke-token\n' > /tmp/sidecar-config/abs_token
           for source in env file; do
             token_args=(-e ABS_TOKEN=smoke-token)
@@ -57,9 +63,8 @@ jobs:
               token_args=(-e ABS_TOKEN_FILE=/run/secrets/abs_token)
             fi
             docker run --name sidecar-smoke -d -p 127.0.0.1:8082:8082 \
-              --mount type=bind,src=/tmp/sidecar-config/config.yaml,dst=/app/config.yaml,readonly \
               --mount type=bind,src=/tmp/sidecar-config/abs_token,dst=/run/secrets/abs_token,readonly \
-              -e ABS_URL=http://127.0.0.1:9 "${token_args[@]}" sidecar-smoke:local
+              -e ABS_URL=http://127.0.0.1:9 -e PLAYLIST_NAMES=Adventure "${token_args[@]}" sidecar-smoke:local
             ready=false
             for attempt in {1..30}; do
               if curl --fail --silent --show-error --max-time 2 \

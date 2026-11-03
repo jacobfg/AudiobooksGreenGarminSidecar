@@ -8,7 +8,7 @@ services:
       ABS_TOKEN: change-me
       # To use a Compose secret instead, remove ABS_TOKEN and uncomment:
       # ABS_TOKEN_FILE: /run/secrets/abs_token
-      SIDECAR_CONFIG: /app/config.yaml
+      PLAYLIST_NAMES: "Adventure,Running"
       CACHE_DIR: /app/cache
       POLL_INTERVAL_SECONDS: "300"
       AUTH_CACHE_SECONDS: "300"
@@ -16,7 +16,6 @@ services:
       CACHE_CHUNK_MINUTES: "30"
       CACHE_BITRATE: 96k
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
       - ./media-cache:/app/cache
     # secrets:
     #   - abs_token
