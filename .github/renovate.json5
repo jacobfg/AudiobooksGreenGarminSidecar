@@ -3,6 +3,7 @@
   "enabledManagers": [
     "gomod",
     "dockerfile",
+    "docker-compose",
     "custom.regex"
   ],
   "dependencyDashboard": true,
@@ -11,6 +12,29 @@
   "prHourlyLimit": 1,
   "separateMinorPatch": false,
   "packageRules": [
+    {
+      "description": "Qualify Docker Hub images that have no explicit registry",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "!/^(?:[^/]*[.:][^/]*|localhost)\\//",
+        "!scratch"
+      ],
+      "replacementNameTemplate": "docker.io/{{{packageName}}}"
+    },
+    {
+      "description": "Keep Compose image versions under manual maintenance",
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor",
+        "patch"
+      ],
+      "enabled": false
+    },
     {
       "description": "Include indirect modules in routine maintenance",
       "matchManagers": [
@@ -40,7 +64,8 @@
         "docker"
       ],
       "matchPackageNames": [
-        "mwader/static-ffmpeg"
+        "mwader/static-ffmpeg",
+        "docker.io/mwader/static-ffmpeg"
       ],
       "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)(?:\\.(?<patch>\\d+))?(?:-(?<build>\\d+))?$"
     },
@@ -71,6 +96,31 @@
         "major"
       ],
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Allow registry qualification despite the default replacement policy",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "!/^(?:[^/]*[.:][^/]*|localhost)\\//",
+        "!scratch"
+      ],
+      "matchUpdateTypes": [
+        "replacement"
+      ],
+      "enabled": true
+    },
+    {
+      "description": "Keep locally built application and smoke-test images out of registry updates",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "sidecar-smoke",
+        "docker.io/sidecar-smoke"
+      ],
+      "enabled": false
     }
   ],
   "customManagers": [

@@ -1,6 +1,6 @@
-FROM mwader/static-ffmpeg:9.0.2-1 AS ffmpeg
+FROM docker.io/mwader/static-ffmpeg:9.0.2-1 AS ffmpeg
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.27.3 AS build
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /src
