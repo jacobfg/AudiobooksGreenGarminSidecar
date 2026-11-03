@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -528,5 +529,59 @@ func TestRunStops(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("background tasks failed to stop")
+	}
+}
+
+func TestPlaylistLookupByNameOrID(t *testing.T) {
+	for _, name := range []string{"Garmin", "Adventure Books"} {
+		for _, lookup := range []string{"name", "normalized-name", "id"} {
+			t.Run(name+"/"+lookup, func(t *testing.T) {
+				s, f := setup(t)
+				groups, err := ParsePlaylists(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.Settings.Playlists = groups
+				f.playlists = []Object{{"id": "first", "libraryId": "a", "name": name}}
+				selector := name
+				if lookup == "normalized-name" {
+					selector = "  " + strings.ToUpper(strings.ReplaceAll(name, " ", "   ")) + "  "
+				}
+				if lookup == "id" {
+					selector = groups[0].ID
+				}
+				// Exercise both the initial reconciliation and an existing cached snapshot.
+				for i := 0; i < 2; i++ {
+					w := request(s, "/audiobookshelf/playlist?playlist_id="+url.QueryEscape(selector), "Bearer valid")
+					var books []Object
+					if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &books) != nil || len(books) != 1 || books[0]["id"] != "book-a" {
+						t.Fatalf("lookup failed: %d %s", w.Code, w.Body.String())
+					}
+				}
+				w := request(s, "/audiobookshelf/playlists", "Bearer valid")
+				var listed []Object
+				if json.Unmarshal(w.Body.Bytes(), &listed) != nil || len(listed) != 1 || listed[0]["id"] != groups[0].ID {
+					t.Fatal("watch-facing ID changed", w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestPlaylistExactIDTakesPrecedenceOverName(t *testing.T) {
+	s, _ := setup(t)
+	groups, err := ParsePlaylists("garmin-adventure,Adventure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Settings.Playlists = groups
+	s.books = map[string][]Object{
+		"garmin-garmin-adventure": {{"id": "name-match"}},
+		"garmin-adventure":        {{"id": "id-match"}},
+	}
+	w := request(s, "/audiobookshelf/playlist?playlist_id=garmin-adventure", "Bearer valid")
+	var books []Object
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &books) != nil || len(books) != 1 || books[0]["id"] != "id-match" {
+		t.Fatalf("saved watch ID resolved to the wrong playlist: %d %s", w.Code, w.Body.String())
 	}
 }

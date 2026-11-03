@@ -159,8 +159,15 @@ func (s *Server) Reconcile(ctx context.Context) (err error) {
 	return s.Cache.Prune(keep)
 }
 func (s *Server) group(id string) *Playlist {
+	// Exact IDs take precedence so a name matching another playlist's ID cannot
+	// change which playlist a watch's saved selection resolves to.
 	for _, p := range s.Settings.Playlists {
 		if p.ID == id {
+			return &p
+		}
+	}
+	for _, p := range s.Settings.Playlists {
+		if normalize(p.Name) == normalize(id) {
 			return &p
 		}
 	}
@@ -236,10 +243,12 @@ func (s *Server) playlist(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "playlist_id is required")
 		return
 	}
-	if s.group(id) == nil {
+	group := s.group(id)
+	if group == nil {
 		fail(w, 404, "Unknown virtual playlist")
 		return
 	}
+	id = group.ID
 	books, ok := s.snapshot(id)
 	if !ok {
 		if err := s.Reconcile(r.Context()); err != nil {

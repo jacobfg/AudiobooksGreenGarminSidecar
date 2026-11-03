@@ -26,6 +26,8 @@ Each name creates one watch playlist by merging **all** matching ABS playlists a
 
 Configured playlists remain visible when no source matches. Deleted and recreated playlists are rediscovered automatically. A failed or malformed library/playlist response preserves the previous complete snapshot and cache. Multiple matching playlists within one library are merged as well.
 
+`GET /audiobookshelf/playlists` lists the stable IDs and display names. `GET /audiobookshelf/playlist?playlist_id=Garmin` accepts either a configured name (ignoring case and extra whitespace) or the generated ID (`garmin-garmin` in this example). Exact IDs take precedence if a name happens to match another playlist's ID. The `playlist_id` query parameter is required.
+
 Watch playlist IDs are derived from normalized names: `Adventure` becomes `garmin-adventure`. Punctuated or non-ASCII names receive a stable hash suffix. Conflicting IDs (for example `A B` and `A-B`) fail startup with a clear error. Renaming an entry changes its ID; changing only case or whitespace does not.
 
 To migrate from the YAML-based Go version, set `PLAYLIST_NAMES`, remove `SIDECAR_CONFIG` and the `config.yaml` mount, and keep the cache volume. YAML config files and explicit source-ID mappings are no longer used. Existing complete audio remains readable; manifests without source fingerprints are rebuilt once in the background to establish source tracking. Custom virtual IDs may change, requiring the watch playlist to be selected again.
