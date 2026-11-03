@@ -1,30 +1,33 @@
 package sidecar
 
 import (
+	"crypto/sha256"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"go.yaml.in/yaml/v3"
 )
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var slugSeparators = regexp.MustCompile(`[^a-z0-9]+`)
+var simplePlaylistName = regexp.MustCompile(`^[a-z0-9]+(?:[ -][a-z0-9]+)*$`)
 
 type Playlist struct {
-	ID      string   `yaml:"id" json:"id"`
-	Name    string   `yaml:"name" json:"name"`
-	Sources []string `yaml:"source_playlist_ids" json:"source_playlist_ids"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Sources []string `json:"source_playlist_ids"`
 }
 type Settings struct {
 	ABSURL, Token, CacheDir, Bitrate string
 	PollInterval, AuthCache          time.Duration
 	StagingRetention                 time.Duration
 	ChunkMinutes                     int
-	Playlists                        []Playlist `yaml:"virtual_playlists"`
+	Playlists                        []Playlist
 }
 
 func env(key, fallback string) string {
@@ -33,79 +36,60 @@ func env(key, fallback string) string {
 	}
 	return fallback
 }
-func LoadSettings(path string) (Settings, error) {
-	var s Settings
-	if path == "" {
-		path = env("SIDECAR_CONFIG", "/app/config.yaml")
+
+// ParsePlaylists reads one CSV record and gives every normalized name a stable ID.
+func ParsePlaylists(value string) ([]Playlist, error) {
+	reader := csv.NewReader(strings.NewReader(value))
+	reader.TrimLeadingSpace = true
+	fields, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("PLAYLIST_NAMES must be a non-empty CSV list: %w", err)
 	}
-	data, err := os.ReadFile(path)
+	if _, err := reader.Read(); err != io.EOF {
+		return nil, fmt.Errorf("PLAYLIST_NAMES must contain one CSV record")
+	}
+	playlists := []Playlist{}
+	seen := map[string]bool{}
+	ids := map[string]string{}
+	for _, field := range fields {
+		name := strings.Join(strings.Fields(field), " ")
+		key := normalize(name)
+		if key == "" {
+			return nil, fmt.Errorf("PLAYLIST_NAMES cannot contain empty names")
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		slug := strings.Trim(slugSeparators.ReplaceAllString(key, "-"), "-")
+		// Simple ASCII names preserve the established garmin-adventure convention.
+		// Non-ASCII/punctuated names use a deterministic hash to avoid slug collisions.
+		if slug == "" || !simplePlaylistName.MatchString(key) {
+			hash := sha256.Sum256([]byte(key))
+			if len(slug) > 48 {
+				slug = slug[:48]
+			}
+			slug = strings.Trim(slug, "-") + fmt.Sprintf("-%x", hash[:8])
+			slug = strings.TrimLeft(slug, "-")
+		}
+		id := "garmin-" + slug
+		if previous, ok := ids[id]; ok {
+			return nil, fmt.Errorf("playlist names %q and %q produce the same ID", previous, name)
+		}
+		ids[id] = name
+		playlists = append(playlists, Playlist{ID: id, Name: name, Sources: []string{}})
+	}
+	return playlists, nil
+}
+
+func LoadSettings() (Settings, error) {
+	var s Settings
+	var err error
+	s.Playlists, err = ParsePlaylists(os.Getenv("PLAYLIST_NAMES"))
 	if err != nil {
 		return s, err
 	}
-	// Decode nodes first: YAML's string coercion must not accept numeric IDs.
-	var doc yaml.Node
-	if err = yaml.Unmarshal(data, &doc); err != nil {
-		return s, err
-	}
-	if err = yaml.Unmarshal(data, &s); err != nil {
-		return s, err
-	}
-	if len(s.Playlists) == 0 {
-		return s, fmt.Errorf("config must contain a non-empty virtual_playlists list")
-	}
-	var checkStrings func(*yaml.Node) error
-	checkStrings = func(n *yaml.Node) error {
-		if n.Kind == yaml.MappingNode {
-			for i := 0; i < len(n.Content); i += 2 {
-				k, v := n.Content[i].Value, n.Content[i+1]
-				if k == "id" || k == "name" {
-					if v.Tag != "!!str" {
-						return fmt.Errorf("playlist %s must be a string", k)
-					}
-				}
-				if k == "source_playlist_ids" {
-					if v.Kind != yaml.SequenceNode {
-						return fmt.Errorf("invalid source playlist list")
-					}
-					for _, x := range v.Content {
-						if x.Tag != "!!str" {
-							return fmt.Errorf("invalid source playlist ID")
-						}
-					}
-				}
-			}
-		}
-		for _, child := range n.Content {
-			if err := checkStrings(child); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err = checkStrings(&doc); err != nil {
-		return s, err
-	}
-	seen := map[string]bool{}
-	for i := range s.Playlists {
-		p := &s.Playlists[i]
-		if !safeID.MatchString(p.ID) || seen[p.ID] {
-			return s, fmt.Errorf("virtual playlist IDs must be unique letters, digits, _ or -")
-		}
-		seen[p.ID] = true
-		p.Name = strings.TrimSpace(p.Name)
-		if p.Name == "" || len(p.Sources) == 0 {
-			return s, fmt.Errorf("virtual playlist %s requires name and source_playlist_ids", p.ID)
-		}
-		for j, source := range p.Sources {
-			source = strings.TrimSpace(source)
-			for _, part := range strings.SplitN(source, "/", 2) {
-				if strings.TrimSpace(part) == "" {
-					return s, fmt.Errorf("invalid source playlist ID or library/playlist name")
-				}
-			}
-			p.Sources[j] = source
-		}
-	}
+
 	s.ABSURL = strings.TrimRight(os.Getenv("ABS_URL"), "/")
 	s.Token = os.Getenv("ABS_TOKEN")
 	if file := os.Getenv("ABS_TOKEN_FILE"); file != "" {

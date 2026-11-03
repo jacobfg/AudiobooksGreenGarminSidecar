@@ -6,6 +6,12 @@ http:
       service: garmin-sidecar
       entryPoints: [websecure]
       tls: {}
+    garmin-sidecar-status:
+      rule: "Host(`abs.example.net`) && PathPrefix(`/garmin/`)"
+      priority: 200
+      service: garmin-sidecar
+      entryPoints: [websecure]
+      tls: {}
     garmin-sidecar-media:
       rule: "Host(`abs.example.net`) && PathRegexp(`^/api/items/[^/]+/file/[^/]+/download$`)"
       priority: 200

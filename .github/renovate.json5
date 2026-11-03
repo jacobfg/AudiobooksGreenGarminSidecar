@@ -4,7 +4,8 @@
     "gomod",
     "dockerfile",
     "docker-compose",
-    "custom.regex"
+    "custom.regex",
+    "npm"
   ],
   "dependencyDashboard": true,
   "automerge": false,

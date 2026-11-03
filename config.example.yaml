@@ -1,8 +1,0 @@
-# Sources accept library name/playlist name or an existing ABS playlist ID.
-# Names ignore case and extra whitespace; missing sources are skipped.
-virtual_playlists:
-  - id: garmin-adventure
-    name: Adventure
-    source_playlist_ids:
-      - "Library A/Adventure"
-      - "Library B/Adventure"

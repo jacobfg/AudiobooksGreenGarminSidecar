@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,8 @@ type File struct {
 	Duration float64 `json:"duration"`
 }
 type Manifest struct {
-	Files []File `json:"files"`
+	Fingerprint string `json:"source_fingerprint,omitempty"`
+	Files       []File `json:"files"`
 }
 type Generation struct {
 	Phase   string `json:"phase"`
@@ -40,6 +42,9 @@ type Cache struct {
 	// Publication and pruning must not race: a removed book may still be encoding.
 	publication sync.Mutex
 	keep        map[string]bool
+	desired     map[string]string
+	jobs        map[string]context.CancelFunc
+	jobVersions map[string]string
 
 	settings   Settings
 	abs        *ABS
@@ -68,7 +73,7 @@ func NewCache(s Settings, a *ABS) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cache{activeStages: map[string]bool{}, settings: s, abs: a, root: root, pending: map[string]bool{}, running: map[string]bool{}, errors: map[string]string{}, generation: map[string]Generation{}, wake: make(chan struct{}, 1)}, nil
+	return &Cache{jobs: map[string]context.CancelFunc{}, jobVersions: map[string]string{}, activeStages: map[string]bool{}, settings: s, abs: a, root: root, pending: map[string]bool{}, running: map[string]bool{}, errors: map[string]string{}, generation: map[string]Generation{}, wake: make(chan struct{}, 1)}, nil
 }
 func (c *Cache) directory(id string) string {
 	if !safeID.MatchString(id) {
@@ -109,7 +114,11 @@ func readManifest(dir string) *Manifest {
 	}
 	return &m
 }
-func (c *Cache) Manifest(id string) *Manifest { return readManifest(c.directory(id)) }
+func (c *Cache) Manifest(id string) *Manifest {
+	c.publication.Lock()
+	defer c.publication.Unlock()
+	return readManifest(c.directory(id))
+}
 func (c *Cache) File(id, file string) string {
 	if m := c.Manifest(id); m != nil {
 		for _, f := range m.Files {
@@ -121,7 +130,16 @@ func (c *Cache) File(id, file string) string {
 	return ""
 }
 func (c *Cache) Queue(id string) {
-	if c.directory(id) == "" || c.Manifest(id) != nil {
+	c.publication.Lock()
+	defer c.publication.Unlock()
+	if c.directory(id) == "" {
+		return
+	}
+	desired, managed := c.desired[id]
+	if c.desired != nil && !managed {
+		return
+	}
+	if m := readManifest(c.directory(id)); m != nil && (c.desired == nil || m.Fingerprint == desired) {
 		return
 	}
 	c.mu.Lock()
@@ -137,6 +155,54 @@ func (c *Cache) Queue(id string) {
 	default:
 	}
 }
+
+// SyncSources records a complete successful snapshot before queueing or pruning.
+// Cancelling a job is not enough: its source version is checked again at publication.
+func (c *Cache) SyncSources(desired map[string]string) {
+	c.publication.Lock()
+	c.desired = desired
+	c.keep = map[string]bool{}
+	for id := range desired {
+		c.keep[id] = true
+	}
+	c.mu.Lock()
+	for id, cancel := range c.jobs {
+		if version, ok := desired[id]; !ok || version != c.jobVersions[id] {
+			cancel()
+		}
+	}
+	queue := c.queue[:0]
+	for _, id := range c.queue {
+		if _, ok := desired[id]; ok {
+			queue = append(queue, id)
+		} else {
+			delete(c.pending, id)
+		}
+	}
+	c.queue = queue
+	c.mu.Unlock()
+	c.publication.Unlock()
+	keep := map[string]bool{}
+	for id := range desired {
+		keep[id] = true
+	}
+	c.QueueAll(keep)
+}
+
+func sourceFingerprint(item Object, settings Settings) string {
+	media := obj(item["media"])
+	files := []Object{}
+	for _, v := range arr(media["audioFiles"]) {
+		f := obj(v)
+		m := obj(f["metadata"])
+		files = append(files, Object{"ino": f["ino"], "filename": m["filename"], "size": m["size"], "mtimeMs": m["mtimeMs"], "ctimeMs": m["ctimeMs"], "duration": f["duration"], "index": f["index"]})
+	}
+	// Do not include book.updatedAt: covers, titles and listening progress should
+	// not trigger expensive audio conversion.
+	data, _ := json.Marshal(Object{"files": files, "chunk_minutes": settings.ChunkMinutes, "bitrate": settings.Bitrate, "format": 1})
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
 func (c *Cache) setGeneration(id, phase string, current, total int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,14 +210,14 @@ func (c *Cache) setGeneration(id, phase string, current, total int) {
 }
 func (c *Cache) Worker(ctx context.Context) {
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
 		}
+		c.publication.Lock()
 		c.mu.Lock()
 		if len(c.queue) == 0 {
 			c.mu.Unlock()
+			c.publication.Unlock()
 			select {
 			case <-ctx.Done():
 				return
@@ -161,19 +227,38 @@ func (c *Cache) Worker(ctx context.Context) {
 		}
 		id := c.queue[0]
 		c.queue = c.queue[1:]
+		version := c.desired[id]
+		jobCtx, cancel := context.WithCancel(ctx)
+		c.jobs[id] = cancel
+		c.jobVersions[id] = version
 		c.running[id] = true
 		c.mu.Unlock()
-		err := c.Build(ctx, id)
+		c.publication.Unlock()
+		err := c.Build(jobCtx, id)
+		wasCancelled := jobCtx.Err() != nil
+		reportError := err != nil && !wasCancelled
+		cancel()
+		c.publication.Lock()
 		c.mu.Lock()
+		delete(c.jobs, id)
+		delete(c.jobVersions, id)
 		delete(c.pending, id)
 		delete(c.running, id)
 		if err != nil {
 			c.errors[id] = err.Error()
-			slog.Error("Garmin conversion failed", "item", id, "error", err)
+			if reportError {
+				slog.Error("Garmin conversion failed", "item", id, "error", err)
+			}
 		} else {
 			delete(c.errors, id)
 		}
+		latest, managed := c.desired[id]
+		retry := managed && (latest != version || wasCancelled) && ctx.Err() == nil
 		c.mu.Unlock()
+		c.publication.Unlock()
+		if retry {
+			c.Queue(id)
+		}
 	}
 }
 func (c *Cache) Status(id string) Object {
@@ -192,6 +277,14 @@ func (c *Cache) Status(id string) Object {
 		r := Object{"state": "ready", "exists": true, "file_count": len(m.Files), "duration_seconds": duration}
 		if gen != nil {
 			r["generation"] = gen
+		}
+		if c.running[id] {
+			r["refresh_state"] = "generating"
+		} else if c.pending[id] {
+			r["refresh_state"] = "queued"
+		} else if e, ok := c.errors[id]; ok {
+			r["refresh_state"] = "failed"
+			r["last_error"] = e
 		}
 		return r
 	}
@@ -306,7 +399,15 @@ func plan(source string, units []unit, seconds float64) []renderPart {
 }
 func (c *Cache) Build(ctx context.Context, id string) error {
 	dir := c.directory(id)
-	if dir == "" || c.Manifest(id) != nil {
+	if dir == "" {
+		return nil
+	}
+	c.publication.Lock()
+	desired, managed := c.desired[id]
+	existing := readManifest(dir)
+	skip := (c.desired != nil && !managed) || (existing != nil && (c.desired == nil || existing.Fingerprint == desired))
+	c.publication.Unlock()
+	if skip {
 		return nil
 	}
 	stage, err := c.beginStage(id)
@@ -368,7 +469,7 @@ func (c *Cache) Build(ctx context.Context, id string) error {
 	if len(parts) == 0 {
 		return fmt.Errorf("conversion produced no files")
 	}
-	m := Manifest{Files: []File{}}
+	m := Manifest{Fingerprint: sourceFingerprint(item, c.settings), Files: []File{}}
 	for i, p := range parts {
 		c.setGeneration(id, "rendering", i, len(parts))
 		name := fmt.Sprintf("%04d.mp3", i+1)
@@ -402,12 +503,22 @@ func (c *Cache) Build(ctx context.Context, id string) error {
 	if c.keep != nil && !c.keep[id] {
 		return os.RemoveAll(stage)
 	}
-	if err = os.RemoveAll(dir); err != nil {
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-	if err = os.Rename(rendered, dir); err != nil {
+	if c.desired != nil {
+		latest, managed := c.desired[id]
+		if !managed {
+			return os.RemoveAll(stage)
+		}
+		if latest != m.Fingerprint {
+			return fmt.Errorf("source changed while converting; waiting for fresh snapshot")
+		}
+	}
+	if err = c.publish(dir, rendered, stage, m); err != nil {
 		return err
 	}
+
 	return os.RemoveAll(stage)
 }
 
@@ -475,4 +586,74 @@ func (c *Cache) finishStage(stage string) {
 		slog.Warn("Could not update staging retention timestamp", "path", stage, "error", err)
 	}
 	delete(c.activeStages, stage)
+}
+
+// publish swaps the manifest atomically. Old audio stays available until all new
+// chunks exist, and readers open their file under the same lock before cleanup.
+func (c *Cache) publish(dir, rendered, stage string, m Manifest) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	prefix := ".g-" + filepath.Base(stage) + "-"
+	moved := []string{}
+	published := false
+	defer func() {
+		if !published {
+			for _, p := range moved {
+				_ = os.Remove(p)
+			}
+		}
+	}()
+	for i := range m.Files {
+		file := &m.Files[i]
+		path := filepath.Join(dir, prefix+file.Path)
+		if err := os.Rename(filepath.Join(rendered, file.Path), path); err != nil {
+			return err
+		}
+		moved = append(moved, path)
+		file.Path = filepath.Base(path)
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	temp := filepath.Join(dir, "manifest.json.new")
+	if err = os.WriteFile(temp, data, 0644); err != nil {
+		return err
+	}
+	if err = os.Rename(temp, filepath.Join(dir, "manifest.json")); err != nil {
+		return err
+	}
+	published = true
+	keep := map[string]bool{}
+	for _, f := range m.Files {
+		keep[f.Path] = true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".mp3") && !keep[entry.Name()] {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+				slog.Warn("Could not remove replaced audio", "error", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Cache) Open(id, fileID string) (*os.File, string, error) {
+	c.publication.Lock()
+	defer c.publication.Unlock()
+	dir := c.directory(id)
+	if m := readManifest(dir); m != nil {
+		for _, f := range m.Files {
+			if f.ID == fileID {
+				handle, err := os.Open(filepath.Join(dir, f.Path))
+				return handle, f.Filename, err
+			}
+		}
+	}
+	return nil, "", os.ErrNotExist
 }

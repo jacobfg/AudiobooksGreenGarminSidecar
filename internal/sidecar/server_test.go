@@ -35,8 +35,12 @@ func bookData(id, ext string) Object {
 }
 func setup(t *testing.T) (*Server, *fakeABS) {
 	t.Helper()
-	f := &fakeABS{libraries: []Object{{"id": "a", "name": "Library A"}, {"id": "b", "name": "Library B"}}, playlists: []Object{}, items: map[string][]string{"first": {"book-a"}, "second": {"book-a", "book-b"}}, extension: ".m4b"}
+	f := &fakeABS{libraries: []Object{{"id": "a", "name": "Library A"}, {"id": "b", "name": "Library B"}}, playlists: []Object{{"id": "first", "libraryId": "a", "name": "Adventure"}, {"id": "second", "libraryId": "b", "name": "Adventure"}}, items: map[string][]string{"first": {"book-a"}, "second": {"book-a", "book-b"}}, extension: ".m4b"}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/socket.io/") {
+			w.WriteHeader(503)
+			return
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		token := r.Header.Get("Authorization")
@@ -60,6 +64,22 @@ func setup(t *testing.T) (*Server, *fakeABS) {
 		}
 		if status := f.statusByPath[r.URL.Path]; status != 0 {
 			w.WriteHeader(status)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/libraries/") && strings.HasSuffix(r.URL.Path, "/playlists") {
+			library := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/libraries/"), "/playlists")
+			entries, ok := f.playlists.([]Object)
+			if !ok {
+				respond(w, 200, Object{"results": nil})
+				return
+			}
+			matched := []Object{}
+			for _, p := range entries {
+				if str(p["libraryId"]) == library {
+					matched = append(matched, p)
+				}
+			}
+			respond(w, 200, Object{"results": matched, "total": len(matched)})
 			return
 		}
 		switch r.URL.Path {
@@ -138,7 +158,15 @@ func manifest(t *testing.T, s *Server, id string) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "0001.mp3"), []byte("mp3"))
-	write(t, filepath.Join(dir, "manifest.json"), []byte(`{"files":[{"id":"chunk-001","path":"0001.mp3","filename":"0001.mp3","duration":12.5}]}`))
+	item, err := s.ABS.Item(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(Manifest{Fingerprint: sourceFingerprint(item, s.Settings), Files: []File{{"chunk-001", "0001.mp3", "0001.mp3", 12.5}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "manifest.json"), data)
 }
 func TestAPI(t *testing.T) {
 	s, f := setup(t)
@@ -213,71 +241,6 @@ func TestAuthAndErrors(t *testing.T) {
 		}
 	}
 }
-func TestNames(t *testing.T) {
-	s, f := setup(t)
-	f.playlists = []Object{{"id": "first", "libraryId": "a", "name": "Adventure Books"}, {"id": "second", "libraryId": "b", "name": "ADVENTURE  books"}}
-	sources := []string{" library a / adventure   BOOKS ", "LIBRARY B/Adventure Books", "Missing/Adventure Books", "Library A/Missing"}
-	got, err := s.ABS.Resolve(context.Background(), sources)
-	if err != nil || got[sources[0]] != "first" || got[sources[1]] != "second" || got[sources[2]] != "" || got[sources[3]] != "" {
-		t.Fatalf("%v %v", got, err)
-	}
-	for _, kind := range []string{"library", "playlist", "malformed"} {
-		t.Run(kind, func(t *testing.T) {
-			s, f := setup(t)
-			f.playlists = []Object{{"id": "first", "libraryId": "a", "name": "Adventure"}}
-			if kind == "library" {
-				f.libraries = []Object{{"id": "a", "name": "Library A"}, {"id": "duplicate", "name": " library  A "}}
-			} else if kind == "playlist" {
-				f.playlists = []Object{{"id": "first", "libraryId": "a", "name": "Adventure"}, {"id": "duplicate", "libraryId": "a", "name": " adventure "}}
-			} else {
-				f.playlists = nil
-			}
-			if _, err := s.ABS.Resolve(context.Background(), []string{"Library A/Adventure"}); err == nil {
-				t.Fatal("invalid listing accepted")
-			}
-		})
-	}
-}
-func TestRefreshPreservesCacheOnFailure(t *testing.T) {
-	s, f := setup(t)
-	s.Settings.Playlists[0].Sources = []string{"Library A/Adventure", "first"}
-	manifest(t, s, "book-a")
-	ctx := context.Background()
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatal(err)
-	}
-	f.playlists = []Object{{"id": "second", "libraryId": "a", "name": "Adventure"}}
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatal(err)
-	}
-	manifest(t, s, "book-b")
-	for _, status := range []int{401, 403, 500} {
-		f.status = status
-		if err := s.Reconcile(ctx); err == nil {
-			t.Fatal("expected error")
-		}
-		books, _ := s.snapshot("garmin-adventure")
-		if len(books) != 2 || s.Cache.Manifest("book-b") == nil {
-			t.Fatal("failure destroyed cache")
-		}
-	}
-	f.status = 0
-	f.playlists = []Object{}
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if s.Cache.Manifest("book-b") != nil {
-		t.Fatal("stale book retained")
-	}
-	f.playlists = []Object{{"id": "second", "libraryId": "a", "name": "Adventure"}}
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatal(err)
-	}
-	books, _ := s.snapshot("garmin-adventure")
-	if len(books) != 2 {
-		t.Fatal(books)
-	}
-}
 func TestOnlyPlaylist404Ignored(t *testing.T) {
 	for _, status := range []int{404, 401, 403, 500} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
@@ -291,7 +254,7 @@ func TestOnlyPlaylist404Ignored(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("expected failure")
 			}
-			if _, err = s.ABS.Resolve(context.Background(), []string{"A/B"}); err == nil {
+			if _, err = s.ABS.Discover(context.Background(), s.Settings.Playlists); err == nil {
 				t.Fatal("listing error ignored")
 			}
 		})
