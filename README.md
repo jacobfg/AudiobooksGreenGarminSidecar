@@ -50,7 +50,7 @@ Each successful refresh checks source audio metadata (file identity, order, name
 
 ## Tests and container releases
 
-Requires Go 1.27.3 or newer. Install FFmpeg and FFprobe on your PATH for local development and tests.
+Requires Go 1.27.4 or newer. Install FFmpeg and FFprobe on your PATH for local development and tests.
 
 ```sh
 go test -race -cover ./...
