@@ -1,4 +1,4 @@
-# syntax=docker.io/docker/dockerfile-upstream:1.28
+# syntax=docker.io/docker/dockerfile-upstream:1.29
 FROM --platform=$BUILDPLATFORM docker.io/golang:1.27.4 AS build
 ARG TARGETOS=linux
 ARG TARGETARCH
