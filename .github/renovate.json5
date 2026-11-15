@@ -155,5 +155,18 @@
   ],
   "postUpdateOptions": [
     "gomodTidy"
-  ]
+  ],
+  "postUpgradeTasks": {
+    "commands": [
+      "env GOTOOLCHAIN=auto go mod tidy"
+    ],
+    "fileFilters": [
+      "go.mod",
+      "go.sum"
+    ],
+    "executionMode": "branch",
+    "installTools": {
+      "golang": {}
+    }
+  }
 }
