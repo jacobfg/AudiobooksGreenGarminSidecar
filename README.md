@@ -65,7 +65,7 @@ GitHub Actions runs Go tests with race detection and vet on pushes and pull requ
 
 The `scratch` runtime image contains a stripped Go binary, CA certificates, and the same static FFmpeg tools. Port 8082, the watch-facing HTTP routes, and existing complete cache manifests remain supported. Playlist configuration now uses `PLAYLIST_NAMES` instead of YAML. Keep the existing cache volume when upgrading. Conversion still runs one job at a time; FFmpeg remains the main CPU consumer during encoding. Measure idle and conversion memory with `docker stats` on your server before choosing resource limits; a smaller service runtime does not eliminate FFmpeg's memory requirements.
 
-To publish a release, tag a commit on `main` with a stable version such as `0.1.0` (no `v` prefix) and push the tag. The publish workflow checks the tag and its ancestry, runs the tests, and pushes both architectures to `ghcr.io/jacobfg/audiobooksgreengarminsidecar` with the version and `latest` tags, using the repository's `GITHUB_TOKEN`. To use a published image, replace `build: .` in Compose with `image: ghcr.io/jacobfg/audiobooksgreengarminsidecar:0.1.0`, substituting your published version.
+To publish a release, tag a commit on `main` with a stable version such as `0.1.0` (no `v` prefix) and publish a GitHub Release for that tag. Pushing the tag alone does not publish an image. The publish workflow checks the tag and its ancestry, runs the tests, and pushes both architectures to `ghcr.io/jacobfg/audiobooksgreengarminsidecar` with the version and `latest` tags, using the repository's `GITHUB_TOKEN`. To use a published image, replace `build: .` in Compose with `image: ghcr.io/jacobfg/audiobooksgreengarminsidecar:0.1.0`, substituting your published version.
 
 ### Validation
 
@@ -126,3 +126,10 @@ rejected push fails the Action. The access preflight only checks visibility;
 it does not prove the token can push. A push rejected with HTTP 403 requires
 checking the token's repository selection, write permissions, and repository
 rules. Issues write access is required for the dashboard.
+
+
+For Go updates, Renovate installs a compatible Go binary and runs
+`env GOTOOLCHAIN=auto go mod tidy` once per update branch, committing `go.mod` and
+`go.sum` together. The command is explicitly allowlisted in the self-hosted
+workflow. CI runs tidy using the Go release declared in `go.mod` and rejects stale
+module files. An unchanged checksum file needs no artificial update.
