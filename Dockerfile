@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 
 # makes minimal image, but keeps the ffmpeg binaries as a cachable layer
 FROM scratch
-COPY --from=docker.io/mwader/static-ffmpeg:9.0.2-1 /ffmpeg /ffprobe /usr/local/bin/
+COPY --from=docker.io/mwader/static-ffmpeg:9.1 /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=build --parents /etc/ssl/certs/ca-certificates.crt /usr/local/bin/sidecar /
 WORKDIR /app
 EXPOSE 8082
